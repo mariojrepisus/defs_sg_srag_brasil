@@ -2863,30 +2863,6 @@ bd_srag_unif_final2 <- bd_srag_unif_final |>
 
 glimpse(bd_srag_unif_final2)
 
-bd_srag_unif_final2 = bd_srag_unif_final2|>
-  select(-id_gal.gal,
-         -paciente_nome_.gal,
-        -pnome_pac.gal,
-        -paciente_nome_mae_.gal,
-        -pnome_mae.gal,
-        -paciente_sexo.gal,
-        -dt_nasc.gal,
-        -ano_nasc.gal,
-        -cod_mun_res.gal,
-        -uf_res.gal,
-        -dt_coleta.gal,
-        -id_srag_sivep.srag,
-        -paciente_nome_.srag,
-        -pnome_pac.srag,
-        -paciente_nome_mae_.srag,
-        -pnome_mae.srag,
-        -paciente_sexo.srag,
-        -dt_nasc.srag,
-        -ano_nasc.srag,
-        -cod_mun_res.srag,
-        -uf_res.srag,
-        -dt_pri_sin.srag)
-
 write_csv2(bd_srag_unif_final2, paste0(pasta_interm,"srag_gal_unif_soprob_final.csv"))
 
 write_parquet(bd_srag_unif_final2, paste0(pasta_interm,"srag_gal_unif_soprob_final.parquet"))
@@ -3767,30 +3743,6 @@ bd_sg_unif_final2 <- bd_sg_unif_final |>
 
 glimpse(bd_sg_unif_final2)
 
-bd_sg_unif_final2 = bd_sg_unif_final2|>
-  select(-id_gal.gal,
-         -paciente_nome_.gal,
-        -pnome_pac.gal,
-        -paciente_nome_mae_.gal,
-        -pnome_mae.gal,
-        -paciente_sexo.gal,
-        -dt_nasc.gal,
-        -ano_nasc.gal,
-        -cod_mun_res.gal,
-        -uf_res.gal,
-        -dt_coleta.gal,
-        -id_sg_sivep.sg,
-        -paciente_nome_.sg,
-        -pnome_pac.sg,
-        -paciente_nome_mae_.sg,
-        -pnome_mae.sg,
-        -paciente_sexo.sg,
-        -dt_nasc.sg,
-        -ano_nasc.sg,
-        -cod_mun_res.sg,
-        -uf_res.sg,
-        -dt_pri_sin.sg)
-
 
 write_csv2(bd_sg_unif_final2, paste0(pasta_inter_link,"sg_gal_unif_soprob_final.csv"))
 
@@ -4661,34 +4613,6 @@ bd_sg_unif_final2 <- bd_sg_unif_final |>
 
 glimpse(bd_sg_unif_final2)
 
-bd_sg_unif_final2 = bd_sg_unif_final2|>
-  select(-id_gal.gal,
-         -paciente_nome_.gal,
-        -pnome_pac.gal,
-        -paciente_nome_mae_.gal,
-        -pnome_mae.gal,
-        -paciente_sexo.gal,
-        -dt_nasc.gal,
-        -ano_nasc.gal,
-        -cod_mun_res.gal,
-        -uf_res.gal,
-        -dt_coleta.gal,
-        -id_sg_sivep.sg,
-        -paciente_nome_.sg,
-        -pnome_pac.sg,
-        -paciente_nome_mae_.sg,
-        -pnome_mae.sg,
-        -paciente_sexo.sg,
-        -dt_nasc.sg,
-        -ano_nasc.sg,
-        -cod_mun_res.sg,
-        -uf_res.sg,
-        -dt_pri_sin.sg)
-
-
-write_csv2(bd_sg_unif_final2, paste0(pasta_interm,"sg_gal_unif_soprob_final.csv"))
-
-write_parquet(bd_sg_unif_final2, paste0(pasta_interm,"sg_gal_unif_soprob_final.parquet"))
 
 
 ```
