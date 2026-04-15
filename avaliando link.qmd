@@ -1,0 +1,1240 @@
+---
+title: "analise_resultados_link"
+format: html
+editor: visual
+editor_options: 
+  chunk_output_type: console
+---
+
+## Setuping
+
+### Pacotes e pastas
+
+```{r, setup}
+#| echo: false
+pacman::p_load(
+  tidyverse,
+  here,
+  arrow,
+  read.dbc,
+  gmapsdistance,
+  stringi,
+  fuzzyjoin,
+  stringdist,
+  abjutils,
+  Rcpp,
+  openxlsx,
+  foreign,
+  dtplyr,
+  gt,
+  gtsummary,
+  writexl,
+  readxl,
+  RecordLinkage,
+  reclin2,
+  DT,
+  digest,
+  knitr,
+  janitor,
+  abjutils
+)
+
+
+
+pasta_geral =  paste0(here(), "/")
+
+pasta_bancos = if (!dir.exists(paste0(pasta_geral, "bancos brutos/"))) {
+  dir.create(paste0(pasta_geral, "bancos brutos/"))
+  paste0(pasta_geral, "bancos brutos/")
+} else {
+  paste0(pasta_geral, "bancos brutos/")
+}
+
+pasta_interm = if (!dir.exists(paste0(pasta_geral, "dados_interm_link/"))) {
+  dir.create(paste0(pasta_geral, "dados_interm_link/"))
+  paste0(pasta_geral, "dados_interm_link/")
+} else {
+  paste0(pasta_geral, "dados_interm_link/")
+}
+
+pasta_result = if (!dir.exists(paste0(pasta_geral, "dados_tratados/"))) {
+  dir.create(paste0(pasta_geral, "dados_tratados/"))
+  paste0(pasta_geral, "dados_tratados/")
+} else {
+  paste0(pasta_geral, "dados_tratados/")
+}
+
+pasta_aux = if (!dir.exists(paste0(pasta_geral, "dados auxiliares/"))) {
+  dir.create(paste0(pasta_geral, "dados auxiliares/"))
+  paste0(pasta_geral, "dados auxiliares/")
+} else {
+  paste0(pasta_geral, "dados auxiliares/")
+}
+
+## data de extração dos bancos
+data_extract_sg = "2025-12-01"
+data_extract_srag = "2025-11-24"
+data_extract_gal = "2025-12-02"
+```
+
+### Lendo o gal e srag
+
+```{r, lendo_dedups}
+gal_dedup = read_parquet(paste0(pasta_inter_link,"gal_link_dedup.parquet"))
+
+srag_dedup = read_parquet(paste0(pasta_interm,"srag_sivep_dedup_filter_pcr_resul.parquet"))
+
+glimpse(srag_dedup)
+
+nrow(srag_dedup|>
+  filter(!is.na(REQUI_GAL))) / nrow(srag_dedup)
+
+sg_dedup = read_csv2(paste0(pasta_interm,"sg_sivep_dedup.csv"))
+```
+
+### Agrupando variaveis
+
+```{r, agrups}
+
+anos <- 2022:2025
+
+var_trat1 = c(
+  "EVOLUCAO",
+  "AN_VSR",
+  "PCR_VSR",
+  "PCR_SARS2",
+  "AN_SARS2",
+  "AN_PARA1",
+  "AN_PARA2",
+  "AN_PARA3",
+  "PCR_PARA1",
+  "PCR_PARA2",
+  "PCR_PARA3",
+  "PCR_PARA4",
+  "AN_ADENO",
+  "PCR_ADENO",
+  "POS_PCRFLU",
+  "POS_AN_FLU",
+  "AN_OUTRO",
+  "PCR_OUTRO",
+  "PCR_METAP",
+  "PCR_BOCA",
+  "PCR_RINO",
+  "TP_FLU_PCR",
+  "TP_FLU_AN",
+  "PCR_FLUBLI",
+  "PCR_FLUASU",
+  "RES_IGG",
+  "RES_IGM",
+  "RES_IGA",
+  "CS_RACA",
+  "CS_GESTANT",
+  "CLASSI_FIN")
+
+var_trat2 = c(
+  "RES_IGG",
+  "RES_IGM",
+  "RES_IGA")
+
+colunas_data <- c(
+  'DT_1_DOSE',
+  'DT_2_DOSE',
+  'DT_ANTIVIR',
+  'DT_CO_SOR',
+  'DT_COLETA',
+  'DT_DIGITA',
+  'DT_DOSEUNI',
+  'DT_ENCERRA',
+  'DT_ENTUTI',
+  'DT_EVOLUCA',
+  'DT_INTERNA',
+  'DT_NASC',
+  'DT_NOTIFIC',
+  'DT_PCR',
+  'DT_RAIOX',
+  'DT_RES',
+  'DT_RES_AN',
+  'DT_SAIDUTI',
+  'DT_SIN_PRI',
+  'DT_TOMO',
+  'DT_TRT_COV',
+  'DT_UT_DOSE',
+  'DT_VAC_MAE'
+)
+
+sintomas = c(
+  "FEBRE",
+  "TOSSE",
+  "GARGANTA",
+  "DISPNEIA",
+  "DESC_RESP",
+  "SATURACAO",
+  "DIARREIA",
+  "VOMITO",
+  "OUTRO_SIN",
+  "DOR_ABD",
+  "FADIGA",
+  "PERD_OLFT",
+  "PERD_PALA") 
+
+sintomas_scrap = c(
+  "FEBRE",
+  "TOSSE",
+  "GARGANTA",
+  "DISPNEIA",
+  "DESC_RESP",
+  "SATURACAO",
+  "DIARREIA",
+  "VOMITO",
+  "DOR_ABD",
+  "FADIGA",
+  "PERD_OLFT",
+  "PERD_PALA",
+  "cefaleia",
+  "coriza",
+  "calafrios",
+  "dor_torax",
+  "cianose",
+  "apneia",
+  "mialgia",
+  "expec_secrecao",
+  "inapetencia",
+  "hipotermia",
+  "pele_fria",
+  "perfusao_lenta",
+  "pulso_fili",
+  "taquipneia",
+  "taquicardia",
+  "choque",
+  "sepse",
+  "nauseas")
+
+s_scrap = c(
+  "FADIGA",
+  "cefaleia",
+  "coriza",
+  "calafrios",
+  "dor_torax",
+  "cianose",
+  "apneia",
+  "mialgia",
+  "expec_secrecao",
+  "inapetencia",
+  "hipotermia",
+  "pele_fria",
+  "perfusao_lenta",
+  "pulso_fili",
+  "taquipneia",
+  "taquicardia",
+  "choque",
+  "sepse",
+  "nauseas")
+
+var_an = c(
+  "AN_SARS2",
+  "AN_VSR",
+  "AN_PARA1",
+  "AN_PARA2",
+  "AN_PARA3",
+  "AN_ADENO",
+  "AN_OUTRO",
+  "TP_FLU_AN"
+)
+
+var_pcr = c(
+  "PCR_VSR",
+  "PCR_PARA1",
+  "PCR_PARA2",
+  "PCR_PARA3",
+  "PCR_PARA4",
+  "PCR_ADENO",
+  "PCR_METAP",
+  "PCR_BOCA",
+  "PCR_RINO",
+  "PCR_OUTRO",
+  "PCR_SARS2",
+  "TP_FLU_PCR"
+)
+
+var_soro = c(
+  "RES_IGG",
+  "RES_IGM",
+  "RES_IGA")
+
+list_detect = c(
+    "flu_a",
+    "flu_b",
+    "vsr",
+    "flu",
+    "covid",
+    "adeno" ,
+    "rino",
+    "paraflu",
+    "metap",
+    "boca",
+    "out_vir")
+
+calend = c(
+  "DT_SIN_PRI",
+  "DT_INTERNA",
+  "DT_COLETA",
+  "DT_CO_SOR",
+  "idade_anos",
+  "idade_cat",
+  "idade_6m"
+)
+
+
+defs = c(
+  "sg_sent_flu",
+  "sg_covid",
+  "srag_flu",
+  "srag_covid",
+  "srag_geral",
+  "srag_expand_2a",
+  "srag_expand_6m",
+  "srag_expand_final",
+  "ari_1",
+  "ari_2",
+  "ari_3",
+  "ari_3_alt",
+  "ari_4",
+  "ari_5",
+  "ili_1",
+  "sari_1"
+)
+
+defs_geral = c(
+  "sg_sent_flu",
+  "sg_covid",
+  "srag_flu",
+  "srag_covid",
+  "srag_geral",
+  "ari_1",
+  "ari_2",
+  "ari_3",
+  "ari_3_alt",
+  "ari_4",
+  "ari_5",
+  "ili_1",
+  "sari_1"
+)
+
+```
+
+### Tipos de exame realizados
+
+#### Srag
+
+```{r}
+glimpse(srag_dedup)
+
+## criando as variaveis para cada detecção
+srag_dedup <- srag_dedup %>%
+  mutate(across(
+    c("AN_ADENO", "AN_OUTRO", "AN_PARA1", "AN_PARA2", "AN_PARA3", "AN_SARS2", "AN_VSR",
+      "PCR_SARS2", "PCR_ADENO", "PCR_BOCA", "PCR_METAP", "PCR_OUTRO", "PCR_PARA1",
+      "PCR_PARA2", "PCR_PARA3", "PCR_PARA4", "PCR_RESUL", "PCR_RINO", "PCR_VSR",
+      "POS_AN_FLU", "POS_AN_OUT", "POS_PCRFLU", "POS_PCROUT", "RES_AN", "TP_FLU_AN",
+      "TP_FLU_PCR", "CLASSI_FIN", "CO_DETEC", "PCR_FLUASU", "PCR_FLUBLI"),
+    ~ as.character(.))) %>%
+  mutate(
+    flu_a = case_when(
+      TP_FLU_AN == "1" ~ 1,
+      TP_FLU_PCR == "1" ~ 1,
+      PCR_FLUASU %in% c("1", "2", "3", "4") ~ 1,
+      .default = 0),
+    flu_b = case_when(
+      PCR_FLUBLI %in% c("1", "2") ~ 1,
+      TP_FLU_AN == "2" ~ 1,
+      TP_FLU_PCR == "2" ~ 1,
+      .default = 0),
+    flu = case_when(
+      flu_a == 1 | flu_b == 1 ~ 1,
+      .default = 0),
+    covid = case_when(
+      PCR_SARS2 == "1" | AN_SARS2 == "1" ~ 1,
+      .default = 0),
+    vsr = case_when(
+      AN_VSR == "1" | PCR_VSR == "1" ~ 1,
+      .default = 0),
+    adeno = case_when(
+      AN_ADENO == "1" | PCR_ADENO == "1" ~ 1,
+      .default = 0),
+    rino = case_when(
+      PCR_RINO == "1" ~ 1,
+      .default = 0),
+    paraflu = case_when(
+      AN_PARA1 == "1" |
+      AN_PARA2 == "1" |
+      AN_PARA3 == "1" |
+      PCR_PARA1 == "1" |
+      PCR_PARA2 == "1" |
+      PCR_PARA3 == "1" |
+      PCR_PARA4 == "1" ~ 1,
+      .default = 0),
+    metap = case_when(
+      PCR_METAP == "1" ~ 1,
+      .default = 0),
+    boca = case_when(
+      PCR_BOCA == "1" ~ 1,
+      .default = 0),
+    out_vir = case_when(
+      AN_OUTRO == "1" | PCR_OUTRO == "1" ~ 1,
+      .default = 0),
+    detect1 = case_when(
+      if_any(.cols = c(flu,covid,vsr,adeno,rino,paraflu,metap,boca),
+             .fns = ~ . == 1) ~ 1,
+      .default = 0),
+    across(
+      .cols = var_trat1,
+      .fns = ~ as.integer(as.numeric(as.character(.)))),
+    paciente_sexo  = as.character(paciente_sexo),
+    SEM_PRI = as.character(SEM_PRI),
+    across(
+      .cols = c(var_trat1,var_trat2),
+      .fns = ~ replace_na(.,0))
+  )
+
+unique(srag_dedup$RES_AN)
+
+srag_dedup = srag_dedup |>
+  mutate(
+    t_antig = case_when(
+      (RES_AN %in% c("1","2","3","5")) |
+        if_any (.cols = !!!var_an, .fns = ~ . %in% c(1,2, "1", "2")) |
+        POS_AN_FLU %in% c("1", "2", 1, 2) |
+        POS_AN_OUT %in% c("1", "2", 1, 2) ~ 1,
+      .default = 0
+    ),
+    t_pcr = case_when(
+      ## retirando resultado pcr NA, não realizado ou ignorado
+      !(is.na(PCR_RESUL) | PCR_RESUL %in% c("4", "9")) | 
+        ## resultados testes pcr dos vírus positivos
+        if_any(.cols = !!!var_pcr, .fns = ~ . %in% c(1, "1")) | 
+        ## Positivo para algum tipo de influenza A
+        PCR_FLUASU %in% c("1", "2", "3", "4", "5", "6", 1:6) |
+        ## Positivo para algum tipo de influenza B
+        PCR_FLUBLI %in% c("1", "2", "4", "5", 1,2,4,5) |
+        ## Positivo para algum tipo de influenza geral
+        POS_PCRFLU %in% c("1", "2", 1, 2) ~ 1,
+      .default = 0
+    ),
+    t_soro = case_when(
+        TP_AM_SOR %in% c("1", "2", 1, 2) |
+        TP_SOR %in% c("1", "2", "3", "4", 1:4) ~1,
+      .default = 0
+    )
+  )
+
+count_tp_exame = srag_dedup|>
+  summarise(
+    n_pcr = sum(t_pcr == 1, na.rm = T),
+    n_antg = sum(t_antig == 1, na.rm = T),
+    n_soro = sum(t_soro == 1, na.rm = T),
+    p_pcr = round(n_pcr/n()*100,1),
+    p_antg = round(n_antg/n()*100,1),
+    p_soro = round(n_soro/n()*100,1)
+  )|>
+  select(
+    ends_with("pcr"), ends_with("antg"), ends_with("soro")
+  )
+
+count_tp_exame
+```
+
+#### SG
+
+##### Agrupando variáveis
+
+```{r}
+
+var_labs_sg = c(
+  "SE_COLETA",
+  "TP_AMOSTRA",
+  "OUT_AMOST",
+  "REQUI_GAL",
+  "IFI_RESUL",
+  "IFI_DATA",
+  "IFI",
+  "POSIFI_FLU",
+  "IFI_FLU",
+  "POSIFI_OUT",
+  "IFI_VRS",
+  "IFI_PARA1",
+  "IFI_PARA2",
+  "IFI_PARA3",
+  "IFI_PARA4",
+  "IFI_ADENO",
+  "IFI_SARS2",
+  "IFI_OUTRO",
+  "DS_IFIOUT",
+  "LAB_IFI",
+  "PCR_RESUL",
+  "PCR_DATA",
+  "POS_PCRFLU",
+  "POS_PCRFLU.1",
+  "PCR_FLU",
+  "FLUA_SUBT",
+  "FLUA_OUT",
+  "PCR_FLUBLI",
+  "FLUBLI_OUT",
+  "POS_PCROUT",
+  "PCR_VRS",
+  "PCR_PARA1",
+  "PCR_PARA2",
+  "PCR_PARA3",
+  "PCR_PARA4",
+  "PCR_ADENO",
+  "PCR_METAP",
+  "PCR_BOCA",
+  "PCR_RINO",
+  "PCR_SARS2",
+  "PCR_OUTRO",
+  "DS_PCROUT",
+  "LAB_PCR"
+)
+
+result_ifi_sg = c(
+  "IFI",
+  "IFI_FLU",
+  "IFI_VRS",
+  "IFI_PARA1",
+  "IFI_PARA2",
+  "IFI_PARA3",
+  "IFI_PARA4",
+  "IFI_ADENO",
+  "IFI_SARS2",
+  "IFI_OUTRO"
+)
+
+result_pcr_sg = c(
+  "POS_PCRFLU",
+  "POS_PCRFLU.1",
+  "PCR_VRS",
+  "PCR_PARA1",
+  "PCR_PARA2",
+  "PCR_PARA3",
+  "PCR_PARA4",
+  "PCR_ADENO",
+  "PCR_METAP",
+  "PCR_BOCA",
+  "PCR_RINO",
+  "PCR_SARS2",
+  "PCR_OUTRO"
+)
+
+sintomas_sg = c("FEBRE", "TOSSE" , "DOR_GARGAN", "OUT_SINT" , "OUT_SINTD")
+
+ft_risco_sg = c(
+  "PUERPERA",
+  "SIND_DOWN",
+  "DIABETES",
+  "IMUNODEPRE",
+  "CARDIOVASC",
+  "HEPATICA",
+  "NEUROLOGIC",
+  "RENAL",
+  "PNEUMOPAT",
+  "OBESIDADE",
+  "IMC",
+  "OUT_FRISC",
+  "OUT_FRISCD",
+  "HEMATOLOGI",
+  "ASMA",
+  "TABAG"
+)
+
+
+list_detect = c(
+    "flu_a",
+    "flu_b",
+    "vsr",
+    "flu",
+    "covid",
+    "adeno" ,
+    "rino",
+    "paraflu",
+    "metap",
+    "boca",
+    "out_vir")
+
+
+
+```
+
+```{r}
+## criando as variaveis para cada detecção
+
+
+sg_dedup <- sg_dedup %>%
+  mutate(across(
+    .cols = var_labs_sg,
+    .fns = ~ as.character(.))) %>%
+  mutate(
+    flu_a = case_when(
+      IFI_FLU == 1 ~ 1,
+      PCR_FLU == 1 ~ 1,
+      FIN_FLU == 1 ~ 1,
+      str_detect(DS_IFIOUT, "(?i)(influenza\\s+a|flu\\s+a|h[1-9]n[1-9])") ~ 1,
+      str_detect(DS_PCROUT, "(?i)(influenza\\s+a|flu\\s+a|h[1-9]n[1-9])") ~ 1,
+      .default = 0),
+    flu_b = case_when(
+      IFI_FLU == 2 ~ 1,
+      PCR_FLU == 2 ~ 1,
+      FIN_FLU == 2 ~ 1,
+      str_detect(DS_IFIOUT, "(?i)(influenza\\s+b|flu\\s+b|vict|yama)") ~ 1,
+      str_detect(DS_PCROUT, "(?i)(influenza\\s+b|flu\\s+b|vict|yama)") ~ 1,
+      .default = 0),
+    flu = case_when(
+      POSIFI_FLU == 1 | 
+        POS_PCRFLU == 1 | 
+        flu_a == 1 | 
+        flu_b == 1 |
+        CLASSI_FIN == 1 ~ 1,
+      .default = 0),
+    covid = case_when(
+      PCR_SARS2 == 1 | CLASSI_FIN == 5 ~ 1,
+      VG_OMS %in% c(1:7) ~ 1,
+      str_detect(DS_IFIOUT, "(?i)(coro|cov|sars|covid)") ~ 1,
+      str_detect(DS_PCROUT, "(?i)(coro|cov|sars|covid)") ~ 1,
+      .default = 0),
+    vsr = case_when(
+      IFI_VRS == 1 | PCR_VRS == 1 ~ 1,
+      str_detect(DS_IFIOUT, "(?i)(vsr|sincicial|sin)") ~ 1,
+      str_detect(DS_PCROUT, "(?i)(vsr|sincicial|sin)") ~ 1,
+      .default = 0),
+    adeno = case_when(
+      IFI_ADENO == 1 | PCR_ADENO == 1 ~ 1,
+      str_detect(DS_IFIOUT, "(?i)adeno") ~ 1,
+      str_detect(DS_PCROUT, "(?i)adeno") ~ 1,
+      .default = 0),
+    rino = case_when(
+      PCR_RINO == 1 ~ 1,
+      str_detect(DS_IFIOUT, "(?i)rino") ~ 1,
+      str_detect(DS_PCROUT, "(?i)rino") ~ 1,
+      .default = 0),
+    paraflu = case_when(
+      IFI_PARA1 == 1 |
+      IFI_PARA2 == 1 |
+      IFI_PARA3 == 1 |
+      IFI_PARA4 == 1 |  
+      PCR_PARA1 == 1 |
+      PCR_PARA2 == 1 |
+      PCR_PARA3 == 1 |
+      PCR_PARA4 == 1 ~ 1,
+      str_detect(DS_IFIOUT, "(?i)parai") ~ 1,
+      str_detect(DS_PCROUT, "(?i)parai") ~ 1,
+      .default = 0),
+    metap = case_when(
+      PCR_METAP == 1 ~ 1,
+      str_detect(DS_IFIOUT, "(?i)meta") ~ 1,
+      str_detect(DS_PCROUT, "(?i)meta") ~ 1,
+      .default = 0),
+    boca = case_when(
+      PCR_BOCA == 1 ~ 1,
+      str_detect(DS_IFIOUT, "(?i)boc") ~ 1,
+      str_detect(DS_PCROUT, "(?i)boc") ~ 1,
+      .default = 0),
+    out_vir = case_when(
+      IFI_OUTRO == 1 | PCR_OUTRO == 1 ~ 1,
+      .default = 0),
+    detect1 = case_when(
+      if_any(.cols = c(flu,covid,vsr,adeno,rino,paraflu,metap,boca),
+             .fns = ~ . == 1) ~ 1,
+      IFI_RESUL == 1 | PCR_RESUL == 1 | POSIFI_OUT == 1 | POS_PCROUT == 1 ~ 1,
+      CLASSI_FIN %in% c(1:3,5) ~ 1,
+      .default = 0))
+
+
+    
+sg_dedup = sg_dedup |>
+  mutate(across(
+    c(
+      FEBRE:OUT_SINT,
+      PUERPERA:OBESIDADE,
+      HEMATOLOGI:TABAG,
+      POSIFI_FLU,
+      POSIFI_OUT,
+      POS_PCRFLU,
+      POS_PCRFLU.1,
+      POS_PCROUT,
+      IFI_VRS,
+      IFI_PARA1,
+      IFI_PARA2,
+      IFI_PARA3,
+      IFI_PARA4,
+      IFI_ADENO,
+      IFI_OUTRO,
+      PCR_SARS2,
+      PCR_VRS,
+      PCR_PARA1,
+      PCR_PARA2,
+      PCR_PARA3,
+      PCR_PARA4,
+      PCR_ADENO,
+      PCR_METAP,
+      PCR_BOCA,
+      PCR_RINO,
+      PCR_OUTRO
+    ),
+    ~ factor(
+      replace_na(as.double(as.character(.)), 0),
+      levels = c(2, 1, 9, 0),
+      labels = c("Não", "Sim", "Ignorado", "Sem informação")
+    )
+  ), across(
+    c(IFI_RESUL, PCR_RESUL),
+    ~ factor(
+      replace_na(as.double(as.character(.)), 0),
+      levels = c(2, 1, 3, 4, 5, 9, 0),
+      labels = c(
+        "Positivo",
+        "Negativo",
+        "Inconclusivo",
+        "Não realizado",
+        "Aguardando resultado",
+        "Ignorado",
+        "Sem informação"
+      )
+    )),
+    across(all_of(c(list_detect,"detect1")),
+           ~ factor(
+             .,
+             levels = c(0,1),
+             labels = c("Não", "Sim")
+           ))
+  )
+
+
+
+summary(bd_sg_t2)
+
+unique(sg_dedup$PCR_RESUL)
+
+sg_dedup = sg_dedup |>
+  mutate(
+    t_ifi = case_when(
+      (PCR_RESUL %in% c("Positivo", 
+                         "Negativo", 
+                         "Inconclusivo",
+                         "Aguardando resultado")) |
+        if_any (.cols = !!!result_ifi_sg, .fns = ~ . %in% c(1, "1")) ~ 1,
+      .default = 0
+    ),
+    t_pcr = case_when(
+      ## retirando resultado pcr NA, não realizado ou ignorado
+      (PCR_RESUL %in% c("Positivo", 
+                         "Negativo", 
+                         "Inconclusivo",
+                         "Aguardando resultado")) | 
+        ## resultados testes pcr dos vírus positivos
+        if_any(.cols = !!!result_pcr_sg, .fns = ~ . %in% c(1, "1")) | 
+        ## Positivo para algum tipo de influenza A
+        FLUA_SUBT %in% c("1", "6", "4", "7", "8", "5", 1,4:8) |
+        ## Positivo para algum tipo de influenza B
+        PCR_FLUBLI %in% c("1", "2", "4", "5", 1,2,4,5) |
+        ## Positivo para algum tipo de influenza geral
+        POS_PCRFLU %in% c("1", "2", 1, 2) ~ 1,
+        PCR_FLU %in% c("1", "2", 1, 2) ~ 1,
+      .default = 0
+    )
+  )
+
+
+count_tp_exame_sg = sg_dedup|>
+  summarise(
+    pcr = sum(t_pcr == 1, na.rm = T),
+    ifi = sum(t_ifi == 1, na.rm = T))|>
+  pivot_longer(
+    cols = everything(),
+    names_to = "teste",
+    values_to = "n"
+  )|>
+  mutate(
+    p = round(n/nrow(sg_dedup)*100,1))|>
+  bind_rows(tibble(teste = "total", n = nrow(sg_dedup), p = 100))
+
+
+count_tp_exame_sg
+```
+
+### Avaliando dos bancos linkados
+
+#### Carregando o banco
+
+```{r}
+sg_link_gal = read_parquet(paste0(pasta_interm,"sg_gal_unif_soprob_final.parquet"))
+
+glimpse(sg_link_gal)
+
+metodo = sg_link_gal|>
+  select(contains("_metodo.gal"))|>
+  pivot_longer(
+    cols = contains("_metodo.gal"),
+    names_to = "virus",
+    values_to = "metodo"
+  )
+
+unique(sg_link_gal$PCR_RESUL.sg)
+
+
+sg_link_gal = sg_link_gal|>
+  mutate(
+    pcr = case_when(
+      PCR_RESUL.sg %in% c(1,2,3,5)|
+        if_any(
+          .cols = ends_with("metodo.gal"),
+          ~ str_detect(., "(?i)pcr")
+        ) == T ~ "Sim",
+      .default = "Não"
+    ),
+    ifi = case_when(
+      IFI_RESUL.sg %in% c(1,2,3,5)|
+        if_any(
+          .cols = ends_with("metodo.gal"),
+          ~ str_detect(., "(?i)Imunof")
+        ) == T ~ "Sim",
+      .default = "Não"
+    )
+  )
+
+count_tp_gal_sg = sg_link_gal|>
+  summarise(
+    pcr = sum(pcr == "Sim", na.rm = T),
+    ifi = sum(ifi == "Sim", na.rm = T))|>
+  pivot_longer(
+    cols = everything(),
+    names_to = "teste",
+    values_to = "n"
+  )|>
+  mutate(
+    p = round(n/nrow(sg_dedup)*100,1))|>
+  bind_rows(tibble(teste = "total", n = nrow(sg_dedup), p = 100))
+
+count_tp_gal_sg
+```
+
+## Separando registro do gal linkados para saber quantos foram aproveitados
+
+```{r, sep_gal_link}
+srag_link_gal = read_parquet(paste0(pasta_interm,"srag_gal_unif_soprob_final.parquet"))
+sg_link_gal = read_parquet(paste0(pasta_interm,"sg_gal_unif_soprob_final.parquet"))
+
+id_gal_link_srag = srag_link_gal|>
+  select(id_gal.gal)|>
+  filter(!is.na(id_gal.gal))
+
+id_gal_link_sg = sg_link_gal|>
+  select(id_gal.gal)|>
+  filter(!is.na(id_gal.gal))
+
+id_gal_relac = unique(bind_rows(id_gal_link_sg,id_gal_link_srag))|>
+  rename("id_gal" = "id_gal.gal")
+
+gal_n_relac = gal_dedup|>
+  anti_join(id_gal_relac, by = "id_gal")
+
+nrow(id_gal_relac)
+
+nrow(gal_n_relac)
+
+nrow(id_gal_relac)/nrow(gal_dedup)*100
+
+(nrow(id_gal_link_srag)+nrow(id_gal_link_sg))-nrow(id_gal_relac)
+
+((nrow(id_gal_link_srag)+nrow(id_gal_link_sg))-nrow(id_gal_relac))/nrow(gal_dedup)
+
+
+```
+
+count_gal_uf_banco = gal_uf_banco\|\>
+
+count(banco\_,uf_res\_)\|\>
+
+pivot_wider(
+
+names_from = banco\_,
+
+values_from = n
+
+)
+
+```{r, gal_link_no_link_uf}
+
+id_gal_link_srag = srag_link_gal|>
+  select(id_gal.gal, uf_res.srag)|>
+  filter(!is.na(id_gal.gal))|>
+  mutate(banco = "srag_gal")|>
+  distinct(id_gal.gal, .keep_all = T)
+
+id_gal_link_srag|>
+  count(uf_res.srag)
+
+
+id_gal_link_sg = sg_link_gal|>
+  select(id_gal.gal, uf_res.sg)|>
+  filter(!is.na(id_gal.gal))|>
+  mutate(banco = "sg_gal")|>
+  distinct(id_gal.gal, .keep_all = T)
+
+id_gal_link_sg|>
+  count(uf_res.sg)
+
+
+gal_n_relac = gal_dedup|>
+  select(id_gal,uf_res)|>
+  anti_join(id_gal_relac, by = "id_gal")|>
+  dplyr::rename("id_gal.gal" = id_gal)|>
+  mutate(banco = "gal")|>
+  distinct(id_gal.gal, .keep_all = T)
+
+
+gal_uf_banco = gal_dedup|>
+  select(id_gal)|>
+  dplyr::rename("id_gal.gal" = id_gal)|>
+  left_join(id_gal_link_sg, by = "id_gal.gal")|>
+  left_join(id_gal_link_srag, by = "id_gal.gal")|>
+  left_join(gal_n_relac, by = "id_gal.gal")|>
+  mutate(banco_ = str_replace_all(paste0(banco,banco.x,banco.y), "NA", ""),
+         uf_res_ = coalesce(uf_res,uf_res.sg,uf_res.srag))|>
+  select(-uf_res.sg,-banco.x,-uf_res.srag,-banco.y,-uf_res,-banco)
+
+gal_uf_banco
+
+count_gal_uf_banco = gal_uf_banco|>
+  count(banco_,uf_res_)|>
+  pivot_wider(
+    names_from = banco_,
+    values_from = n
+  )|>
+  rowwise()|>
+  mutate(
+    total = sum(gal, sg_gal, srag_gal, na.rm = T),
+    perc_gal = gal/total * 100,
+    perc_sg_gal = sg_gal/total * 100,
+    perc_srag_gal = srag_gal/total * 100,
+    perc_sg_srag_gal = sg_galsrag_gal/total * 100
+  )|>
+  ungroup()|>
+  rename("sg_srag_gal" = sg_galsrag_gal)|>
+  select(
+    uf_res_,
+    gal,
+    perc_gal,
+    sg_gal,
+    perc_sg_gal,
+    srag_gal,
+    perc_srag_gal,
+    sg_srag_gal,
+    perc_sg_srag_gal,
+    total
+  )|>
+  mutate(gal_ = format_n_perc(gal,perc_gal),
+         sg_gal_ = format_n_perc(sg_gal, perc_sg_gal),
+         srag_gal_ = format_n_perc(srag_gal,perc_srag_gal),
+         sg_srag_gal_ = format_n_perc(sg_srag_gal, perc_sg_srag_gal),
+         total_ = format_n_int(total))|>
+  mutate_all(str_replace_all,"NANA","0")|>
+  mutate_all(str_replace_all,"NA","0,0")|>
+  mutate(sg_srag_gal_ = str_replace_all(sg_srag_gal_,"00(0%)","0 (0,0%)"))|>
+  mutate(regiao = case_when(
+    uf_res_ %in% c("AC", "AP", "AM", "PA", "RO", "RR", "TO") ~ "Norte",
+    uf_res_ %in% c("AL", "BA", "CE", "MA", "PB", "PE", "PI", "RN", "SE") ~ "Nordeste",
+    uf_res_ %in% c("DF", "GO", "MT", "MS") ~ "Centro-Oeste",
+    uf_res_ %in% c("ES", "MG", "RJ", "SP") ~ "Sudeste",
+    uf_res_ %in% c("PR", "RS", "SC") ~ "Sul",
+    TRUE ~ NA_character_
+  ))
+
+plot_count_gal_uf_banco = count_gal_uf_banco|>
+  select(regiao,uf_res_,gal_:total_)|>
+  gt(groupname_col = "regiao")|>
+  cols_label(
+    uf_res_ = "UF",
+    gal_ = "Apenas Gal",
+    sg_gal_ = "Relac. SG",
+    srag_gal_ = "Relac. Srag",
+    sg_srag_gal_ = "Relac. SG e Srag",
+    total_ = "Total por UF"
+  )|>
+  tab_style(
+    style = cell_text(align = "right"),
+    locations = cells_body(columns = gal_:total_)
+  )|>  
+  tab_style(
+    style = cell_text(align = "center", weight = "bold"),
+    locations = cells_column_labels())|>
+  tab_style(
+    style = cell_text(align = "left", weight = "bold"),
+    locations = cells_column_labels(uf_res_))|>
+  tab_header(
+    title = "Nº de amostras deduplicadas presentes nos bancos de SG e Srag após relacionamento probabilístico. Brasil, 2022 a 2025")|>
+  tab_footnote(
+    footnote = md(fonte_sg_gal))|>
+  tab_options(
+    heading.align = "left")
+
+
+gtsave(plot_count_gal_uf_banco, paste0(pasta_interm, "aval_uf_gal_sg_srag.png"),
+       vwidth = 3000, vheight = 3000)
+```
+
+## Avaliando os dados não linkados de RT-PCR para Srag
+
+```{r}
+### Srag linkado
+bd_srag = read_parquet(paste0(pasta_inter_link,"srag_gal_unif_soprob_final.parquet"))
+
+names(bd_srag) = str_remove_all(names(bd_srag), ".srag")
+
+
+
+bd_aval = bd_srag|>
+   mutate(
+     t_pcr = case_when(
+      ## retirando resultado pcr NA, não realizado ou ignorado
+       PCR_RESUL %in% c("1", "2", "3", "5","9", 1, 2, 3, 5,9) | 
+        ## resultados testes pcr dos vírus positivos
+        if_any(.cols = !!!result_pcr_sg, .fns = ~ . %in% c(1, "1", "Sim")) == T | 
+        if_any(
+          .cols = ends_with("metodo.gal"),
+          ~ str_detect(., "(?i)pcr")
+        ) == T  ~ 1,
+      .default = 0)
+     )|>
+  filter(is.na(id_gal.gal) & t_pcr == 1)
+
+n_aval = nrow(bd_aval)
+
+n_aval_s_cnes = nrow(bd_aval|>
+       filter(is.na(CO_LAB_PCR)))
+
+(n_aval - n_aval_s_cnes)/ (1070349) *100
+
+n_aval_s_cnes / (1070349) *100
+
+39037 / 1070349 *100
+
+(79999 + 24041) / 143077 *100
+ / 1070349 *100
+
+bd_cnes = read_csv(paste0(pasta_aux,"cnes_202511.csv"))
+glimpse(bd_cnes)
+bd_cnes = bd_cnes|>
+  select(`NATUREZA JURÍDICA CATEGORIA`, GESTÃO, CNES)|>
+  rename("natureza" = `NATUREZA JURÍDICA CATEGORIA`,
+         "gestao" = GESTÃO,
+         "cnes" = CNES)
+
+bd_ex_falt = bd_aval|>
+  left_join(bd_cnes, by = c("CO_LAB_PCR" = "cnes"))
+
+aval_nat_gestao = bd_ex_falt|>
+  count(gestao, natureza) |>
+  group_by(natureza) |>
+  mutate(pct = round(100 * n / sum(n), 1))|>
+  tidyr::pivot_wider(names_from = natureza, values_from = c(n,pct))|>
+  adorn_totals()|>
+  select(gestao, ends_with("PRIVADO"), ends_with("LUCRATIVOS"), ends_with("LICO"), ends_with("NA"))|>
+  mutate(
+    PRIVADO = paste0(n_PRIVADO, " (", pct_PRIVADO, "%)"),
+    LUCRATIVOS = paste0(`n_SEM FINS LUCRATIVOS`, " (", `pct_SEM FINS LUCRATIVOS`, "%)"),
+    PUBLICO = paste0(n_PÚBLICO, " (", pct_PÚBLICO, "%)"),
+    `NA` = paste0(n_NA, " (", pct_NA, "%)")
+  ) |>
+  select(gestao, PRIVADO, LUCRATIVOS, PUBLICO,`NA`)
+
+
+aval_nat_gestao
+
+write_csv2(aval_nat_gestao, paste0(pasta_inter_link, "aval_nat_gestao_pcrs_faltantes.csv"))
+
+
+aval_uf_nat <- bd_ex_falt |>
+  tabyl(uf_res, natureza) |>
+  adorn_percentages("col") |>
+  adorn_pct_formatting(digits = 1)
+
+# Agora vamos juntar n e % no formato desejado
+aval_uf_nat_final <- bd_ex_falt |>
+  filter(!is.na(CO_LAB_PCR))|>
+  count(uf_res, natureza) |>
+  group_by(uf_res) |>
+  mutate(pct = round(100 * n / sum(n), 1))|>
+  tidyr::pivot_wider(names_from = natureza, values_from = c(n,pct))|>
+  adorn_totals()|>
+  select(uf_res, ends_with("PRIVADO"), ends_with("LUCRATIVOS"), ends_with("LICO"))|>
+  mutate(
+    PRIVADO = paste0(n_PRIVADO, " (", pct_PRIVADO, "%)"),
+    LUCRATIVOS = paste0(`n_SEM FINS LUCRATIVOS`, " (", `pct_SEM FINS LUCRATIVOS`, "%)"),
+    PUBLICO = paste0(n_PÚBLICO, " (", pct_PÚBLICO, "%)")
+  ) |>
+  select(uf_res, PRIVADO, LUCRATIVOS, PUBLICO)
+
+
+
+aval_uf_nat_final
+
+write_csv2(aval_uf_nat_final, paste0(pasta_interm, "natureza_pcrs_faltantes.csv"))
+```
+
+## Avaliando os dados não linkados de RT-PCR para Srag
+
+```{r}
+bd_sg = read_parquet(paste0(pasta_interm,"sg_gal_unif_soprob_final.parquet"))
+
+names(bd_sg) = str_remove_all(names(bd_sg), ".sg")
+
+
+
+bd_aval = bd_sg|>
+   mutate(
+     t_pcr = case_when(
+      ## retirando resultado pcr NA, não realizado ou ignorado
+       PCR_RESUL %in% c("1", "2", "3", "5","9", 1, 2, 3, 5,9) | 
+        ## resultados testes pcr dos vírus positivos
+        if_any(.cols = !!!result_pcr_sg, .fns = ~ . %in% c(1, "1", "Sim")) == T | 
+        if_any(
+          .cols = ends_with("metodo.gal"),
+          ~ str_detect(., "(?i)pcr")
+        ) == T   ~ 1,
+      .default = 0)
+     )|>
+  filter(is.na(id_gal.gal) & t_pcr == 1)
+
+nrow(bd_aval)
+
+glimpse(bd_aval)
+
+nrow(bd_aval|>
+       filter(is.na(LAB_PCR)))
+
+bd_cnes = read_csv(paste0(pasta_aux,"cnes_202511.csv"))
+glimpse(bd_cnes)
+bd_cnes = bd_cnes|>
+  select(`NATUREZA JURÍDICA CATEGORIA`, GESTÃO, CNES)|>
+  rename("natureza" = `NATUREZA JURÍDICA CATEGORIA`,
+         "gestao" = GESTÃO,
+         "cnes" = CNES)
+
+bd_ex_falt = bd_aval|>
+  left_join(bd_cnes, by = c("LAB_PCR" = "cnes"))
+
+aval_nat_gestao = bd_ex_falt|>
+  count(gestao, natureza) |>
+  group_by(natureza) |>
+  mutate(pct = round(100 * n / sum(n), 1))|>
+  tidyr::pivot_wider(names_from = natureza, values_from = c(n,pct))|>
+  adorn_totals()|>
+  select(gestao,ends_with("LICO"), ends_with("NA"))|>
+  mutate(
+    PUBLICO = paste0(n_PÚBLICO, " (", pct_PÚBLICO, "%)"),
+    `NA` = paste0(n_NA, " (", pct_NA, "%)")
+  ) |>
+  select(gestao,PUBLICO,`NA`)
+
+
+aval_nat_gestao
+
+write_csv2(aval_nat_gestao, paste0(pasta_interm, "aval_nat_gestao_pcrs_faltantes_sg.csv"))
+
+
+aval_uf_nat <- bd_ex_falt |>
+  tabyl(uf_res, natureza) |>
+  adorn_percentages("row") |>
+  adorn_pct_formatting(digits = 1)
+
+# Agora vamos juntar n e % no formato desejado
+aval_uf_nat_final <- bd_ex_falt |>
+  filter(!is.na(LAB_PCR))|>
+  count(uf_res, natureza) |>
+  group_by(natureza) |>
+  mutate(pct = round(100 * n / sum(n), 1))|>
+  tidyr::pivot_wider(names_from = natureza, values_from = c(n,pct))|>
+  adorn_totals()|>
+  select(uf_res,ends_with("LICO"))|>
+  mutate(
+    PUBLICO = paste0(n_PÚBLICO, " (", pct_PÚBLICO, "%)")
+  ) |>
+  select(uf_res, PUBLICO)
+
+
+
+aval_uf_nat_final
+
+write_csv2(aval_uf_nat_final, paste0(pasta_interm, "natureza_pcrs_faltantes_sg.csv"))
+
+
+srag_gal_prob_ = read_parquet(paste0(pasta_interm,"srag_gal_prob.parquet"))
+sg_gal_prob_ = read_parquet(paste0(pasta_interm,"sg_gal_prob.parquet"))
+
+n_gal = sg_gal_prob_|>
+          select(id_gal.gal)|>
+          bind_rows(srag_gal_prob_|>
+                    select(id_gal.gal))
+
+nrow(n_gal)
+nrow(n_gal|>
+       distinct(id_gal.gal))
+
+nrow(n_gal) - nrow(n_gal|>
+       distinct(id_gal.gal))
+```
+
+#### gal_cnes
+
+```{r}
+bd_cnes = read_csv(paste0(pasta_aux,"cnes_202511.csv"))
+glimpse(bd_cnes)
+bd_cnes = bd_cnes|>
+  select(`ATENDIMENTO PRESTADO`,UF,`ATIVIDADE PRINCIPAL`,`TIPO DO ESTABELECIMENTO`,`NATUREZA JURÍDICA CATEGORIA`, GESTÃO, CNES)|>
+  rename("natureza" = `NATUREZA JURÍDICA CATEGORIA`,
+         "gestao" = GESTÃO,
+         "cnes" = CNES)
+
+a = bd_cnes|>
+  filter(str_detect(`RAZÃO SOCIAL`,"LABORATORIO CENTRAL DE SAUDE P|LACEN\\s+|"))
+
+a|>
+  count(`ATENDIMENTO PRESTADO`,`RAZÃO SOCIAL`)
+
+glimpse(gal_dedup)
+gal_dedup_cnes = gal_dedup|>
+  left_join(bd_cnes, by = c("unidade_solicitante_cnes" = "cnes"))
+
+view(gal_dedup_cnes|>
+  count(`TIPO DO ESTABELECIMENTO`)|>
+  arrange(desc(n))|>
+    mutate(perc = round(n/sum(n)*100,1)))
+
+
+
+write_csv2(gal_dedup_cnes|>
+  count(`TIPO DO ESTABELECIMENTO`)|>
+  arrange(desc(n))|>
+    mutate(perc = round(n/sum(n)*100,1)), paste0(pasta_inter_link,"aval_atendimento_gal_unidade_solicitante.csv"))
+
+
+
+
+glimpse(bd_srag)
+bd_srag_cnes = bd_srag|>
+  left_join(bd_cnes, by = c("CO_LAB_PCR.srag" = "cnes"))
+
+glimpse(bd_srag_cnes|>
+          select(`TIPO DO ESTABELECIMENTO`))
+
+view(bd_srag_cnes|>
+  count(`TIPO DO ESTABELECIMENTO`)|>
+  arrange(desc(n))|>
+    mutate(perc = round(n/sum(n)*100,1)))
+
+
+write_csv2(bd_srag_cnes|>
+  count(`TIPO DO ESTABELECIMENTO`)|>
+  arrange(desc(n))|>
+    mutate(perc = round(n/sum(n)*100,1)), paste0(pasta_inter_link,"aval_atendimento_gal_lab_executor (pcr).csv"))
+
+
+```
