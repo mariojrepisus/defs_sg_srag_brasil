@@ -8,3 +8,5 @@ Favor enviar para mario.junior@saude.gov.br e mariojr.episus@gmail.com
 Não compartilhe dados nominais fora de ambientes seguros autorizados. A LGPD garante direitos de confidencialidade de cidadãos brasileiros. 
 
 A pesquisa foi aprovada pelo Comitê de Ética em Pesquisa do Instituto Nacional de Infectologia Evandro Chagas, aprovado sob número CAAE 94470425.9.0000.0008, em 13/01/2026.
+
+Para implementação, utilize um shapefile em GeoJSON das UFs brasileiras e também o banco CNES fornecido pelo ElastiCNES. Na execução deste projeto, foi utilizado o banco de 11/2025.
