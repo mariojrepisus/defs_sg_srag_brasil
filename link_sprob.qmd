@@ -1,0 +1,4698 @@
+---
+title: "linkage_sivep_gal"
+format: html
+editor: visual
+editor_options: 
+  chunk_output_type: console
+---
+
+## Setuping
+
+Foram analisados os registros com detecção para cada um dos vírus respiratórios presentes no Sivep-gripe tanto no Módulo SG sentinela como no Módulo Srag. Os dados do Sivep-gripe foram relacionados de forma probabilística com os dados de detecções para vírus respiratórios encontrados no GAL para encontrar os resultados de exames não registrados no Sivep-gripe. 
+
+Antes do relacionamento propriamente dito, foram removidas as duplicidades em ambos os bancos por método determinístico, considerando as seguintes variáveis identificadoras: “nome do paciente”; “nome da mãe do paciente”; “data de nascimento”; “sexo”, “UF de residência”, além da "data do início dos sintomas" para o Sivep-gripe e "data da coleta" para o Gal.
+
+Os dados do Gal que obtiveram a mesma chave porem apresentaram exames para tipos de vírus diferentes foram unificados em uma única observação para união das variáveis de interesse do Gal, as quais serão a “data de coleta”, “exame”, “metodologia”, “agravo” e “resultado” para cada vírus. Quando foi encontrado mais de um exame para o mesmo vírus na mesma data de coleta, foi dada preferência para o resultado positivo.
+
+Os dados foram relacionados de forma probabilística, que utilizará as variáveis da formação da chave ( “nome do paciente”; “nome da mãe do paciente”; “data de nascimento”; “sexo”, “UF de residência”), realizando blocagem pelos seguintes arranjos de variáveis utilizadas pelas, conforme recomendação do IPEA para relacionamento de grandes bases de dados, visando aumentar a granularidade de pares e também manter a análise dentro da capacidade informacional disponível \[ref\]:
+
+| N | Variáveis utilizadas para blocos de pares |
+|------------------------------------|------------------------------------|
+| 1 | Nome do paciente & Ano de nascimento |
+| 2 | Nome do paciente & Primeiro nome da mãe |
+| 3 | Nome do paciente & UF de residência |
+| 4 | Primeiro nome do paciente & Nome da mãe do paciente |
+| 5 | Primeiro nome do paciente & Data de nascimento |
+| 6 | Nome da mãe do paciente & Ano de nascimento |
+| 7 | Nome da mãe do paciente & UF de residência |
+| 8 | Primeiro nome da mãe & Data de nascimento |
+| 9 | Data de nascimento e UF de residência |
+| 10 | Sexo do paciente & Data de nascimento |
+| 11 | Primeiro nome do paciente & Código do município de residência |
+| 12 | Sexo do paciente & Ano de nascimento & Código do município de residência |
+
+Segundo o IPEA, fazer a blocagem com pareamento 2x2 é mais eficiente do que 3x3 (o que pode gerar “gessamento” da blocagem) ou individual (o que causa explosão de pares) \[ref\], porém, por sugestão da área técnica, foi feito pareamento por três variáveis (sexo & ano de nasc. & UF de residência) pela experiência da equipe com relacionamento de grandes bancos.
+
+Para variáveis de texto, foi considerada distância de Jaro-Winkler testando com pontuações entre 80 a 90% \[refs\]. Para data de nascimento, foi considerada a distância de Hamming, testando o ponto de corte o ponto de corte entre “1” e “2” \[cidacs\]. Foi realizada conferência manual de 5 pares com divergência nome do paciente, nome da mãe e data de nascimento visando testar a qualidade do relacionamento probabilístico. Ao final, foram utilizados os pontos de 85% de Jaro-Winkler e 1 de Hamming. Logo após, foram filtrados os casos que possuiam entre 0 e 30 dias a "data de início dos sintomas" e a "data de coleta" do exame. Foi usado o pacote reclin2, no R 4.4.3. O relacionamento foi realizado em computador com Processador Intel Xeon(R) W-1370 (8 núcleos de 2.90 GHz) e 128 Gb de memória RAM DDR4 - 3200 MHz.
+
+Todos os casos de SG e Srag encontrados no relacionamento foram anonimizados. Serão excluídos previamente registros sem presença de sintoma, e que não possuam data do início dos sintomas, bem como, posterior ao relacionamento, registros que possuam detecção com data da coleta maior que sete dias do início dos sintomas, visando reforçar a relação entre a detecção viral e o quadro clínico.
+
+### Pacotes e pastas
+
+Foram utilizados os seguintes pacotes para realização do relacionamento:
+
+-   tidyverse: para manipulação e tratamento de dados tabulares;
+
+-   abjutils: pacote que contem função para tratamento de "strings", como remoção de acentos;
+
+-   arrow: para leitura e salvamento de banco de dados em formato .parquet, visando acelerar o processo de leitura e tratamento de dados;
+
+-   foreign: para leitura de banco de dados em formato .dbf;
+
+-   gtsummary: para facilitar a seleção de variáveis e apresentação de dados;
+
+-   here: para facilitar o referenciamento de pastas internas do computador que utiliza o código;
+
+-   janitor: para exploração de dados, limpeza e sumarização de dados tabulares;
+
+-   openxlsx: para abertura e manipulação de dados em formato de Excel;
+
+-   reclin2: contem funções para tratamento de variáveis, geração de pares e realização do relacionamento probabilístico, com base em algoritimos implementados em C++.
+
+```{r, setup}
+#| echo: false
+pacman::p_load(
+  tidyverse,
+  abjutils,
+  arrow,
+  foreign,
+  gtsummary,
+  here,
+  janitor,
+  openxlsx,
+  reclin2,
+  stringdist)
+
+
+pasta_geral =  paste0(here(),"/")
+
+pasta_bancos = if (!dir.exists(paste0(pasta_geral, "bancos brutos/"))) {
+  dir.create(paste0(pasta_geral, "bancos brutos/"))
+  paste0(pasta_geral, "bancos brutos/")
+} else {
+  paste0(pasta_geral, "bancos brutos/")
+}
+
+pasta_interm = if (!dir.exists(paste0(pasta_geral, "dados_interm_link/"))) {
+  dir.create(paste0(pasta_geral, "dados_interm_link/"))
+  paste0(pasta_geral, "dados_interm_link/")
+} else {
+  paste0(pasta_geral, "dados_interm_link/")
+}
+
+pasta_result = if (!dir.exists(paste0(pasta_geral, "dados_tratados/"))) {
+  dir.create(paste0(pasta_geral, "dados_tratados/"))
+  paste0(pasta_geral, "dados_tratados/")
+} else {
+  paste0(pasta_geral, "dados_tratados/")
+}
+
+
+## data de extração dos bancos
+data_extract_sg = "01/12/2025"
+data_extract_srag = "24/11/2025"
+data_extract_gal = "02/12/2025"
+
+
+
+fonte_srag_gal = paste0("Fonte: Sivep-gripe / DataSUS / MS. Extraído em: ", data_extract_srag ,"<br>
+                      GAL / DataSUS / MS. Extraído em: ", data_extract_gal)
+fonte_sg_gal = paste0("Fonte: Sivep-gripe / DataSUS / MS. Extraído em: ", data_extract_sg ,"<br>
+                      GAL / DataSUS / MS. Extraído em: ", data_extract_gal)
+
+options(scipen = 999)
+
+```
+
+### Funções
+
+#### Limpar dbf padronizando utf8 como encoding
+
+Foram geradas, com ajuda de IA, funções para evitar erros no salvamento de bancos advindos do formato .dbf
+
+```{r}
+remove_nul_raw <- function(x) {
+  if (!is.character(x))
+    return(x)
+  vapply(x, function(s) {
+    r <- charToRaw(s)               # bytes do texto
+    r <- r[r != as.raw(0x00)]       # remove 0x00
+    rawToChar(r)                    # volta para string
+  }, FUN.VALUE = character(1))
+}
+
+fix_text <- function(x) {
+  if (!is.character(x))
+    return(x)
+  
+  # Remove NUL de forma robusta em bytes
+  x <- remove_nul_raw(x)
+  
+  # Converte CP1252 -> UTF-8
+  y <- iconv(x, from = "CP1252", to = "UTF-8", sub = "byte")
+  nas <- is.na(y)
+  if (any(nas)) {
+    y[nas] <- iconv(x[nas],
+                    from = "latin1",
+                    to = "UTF-8",
+                    sub = "byte")
+  }
+  
+  enc2utf8(y)
+}
+
+```
+
+#### Calcular similaridade de hamming para datas em %
+
+Também foi criada função para comparação de varíaveis pela similaridade de Hamming para datas, utilizando um rescalonamento da similaridade para porcentagem, considerando que a mesma será utilizada para datas.
+
+```{r, funcoes}
+
+cmp_hamming_date = function (threshold = 0.85) 
+{
+    function(x, y) {
+        if (!missing(y)) {
+            (8 - stringdist(x, y, method = "hamming"))/8
+        }
+        else {
+            (x > threshold) & !is.na(x)
+        }
+    }
+}
+
+
+wrap_by_words <- function(x, n = 5) {
+  stopifnot(is.numeric(n), length(n) == 1, n >= 1)
+  if (length(x) == 0) return(x)
+  vapply(
+    x,
+    FUN = function(s) {
+      if (is.na(s) || !nzchar(s)) return(s)
+      # divide em palavras (1+ espaços/tabs/quebras)
+      w <- strsplit(s, "\\s+", perl = TRUE)[[1]]
+      # agrupa de n em n e cola com espaço; depois junta os blocos com '\n'
+      grupos <- (seq_along(w) - 1) %/% n
+      linhas <- tapply(w, grupos, paste, collapse = " ")
+      paste(linhas, collapse = "\n")
+    },
+    FUN.VALUE = character(1)
+  )
+}
+
+
+
+var_pcr = c(
+  "PCR_VSR", "PCR_PARA1", "PCR_PARA2", "PCR_PARA3", "PCR_PARA4", "PCR_ADENO", 
+  "PCR_METAP", "PCR_BOCA", "PCR_RINO", "PCR_OUTRO", "PCR_SARS2", "TP_FLU_PCR"
+)
+```
+
+## Lendo os bancos
+
+```{r, lendo os bancos}
+#| echo: false
+
+#### Lendo os dados do Gal ----- 
+
+gal = list.files(path = pasta_bancos,
+                       pattern = "gal_",
+                       full.names = T)|>
+  lapply(read_csv2, col_types = cols(.default = "c"),
+         locale = locale(encoding = "WINDOWS-1252"))|>
+  bind_rows()
+
+glimpse(gal)
+
+table(gal$resultado, gal$virus)
+
+
+#### Lendo dados de SG sivep ----
+
+sg_sivep = list.files(path = pasta_bancos,
+                       pattern = "sg_",
+                       full.names = T)|>
+  lapply(\(f) read.dbf(f, as.is = TRUE)) |>
+  bind_rows()
+
+
+sg_sivep <- sg_sivep |>
+  mutate(
+    across(where(is.factor), ~ as.character(.)),     # se houver fatores
+    across(where(is.character), ~fix_text(.)),
+    across(where(is.character),
+           ~ gsub("[[:cntrl:]]", "", ., useBytes = TRUE)))
+
+glimpse(sg_sivep)
+
+nrow(sg_sivep)
+
+unique(sg_sivep$CLASSI_FIN)
+
+sg_sivep|>
+  count(COD_UF)
+
+#### Lendo dados de SRAG sivep ----
+
+srag_sivep = list.files(path = pasta_bancos,
+                       pattern = "srag_",
+                       full.names = T)|>
+  lapply(read_parquet)|>
+  bind_rows()
+
+glimpse(srag_sivep)
+
+nrow(srag_sivep)
+
+unique(srag_sivep$CS_SEXO)
+
+#### Lendo dados de SG eSUS ----
+
+load(paste0(pasta_bancos,"esus_s_2020_23.Rdata"))
+
+load(paste0(pasta_bancos,"esus_s_2024_25.Rdata"))
+
+
+sg_esus = bind_rows(
+  df_final_com_reinfeccao_2022_novo|>
+    mutate(across(everything(), as.character)),
+  df_final_com_reinfeccao_2023_novo|>
+    mutate(across(everything(), as.character)),
+  df_final_com_reinfeccao_2024_2025|>
+    mutate(across(everything(), as.character)))
+
+glimpse(sg_esus)
+
+
+cat("### GAL",
+    "\n\nN de linhas: ", nrow(gal),
+    "\nNomes das colunas (",ncol(gal),") :", paste0(names(gal), sep = "\n"),
+    "\nVírus encontrados: ", paste0(sort(unique(gal$virus)), sep = ",\n"),sep = "")
+
+cat("\n\n### Sivep - SG",
+    "\n\nN de linhas: ", nrow(sg_sivep),
+    "\nNomes das colunas (",ncol(sg_sivep),") :", paste0(names(sg_sivep), sep = "\n"),
+    "\nCasos confirmados por vírus respiratórios: ", 
+    nrow(sg_sivep|>filter(CLASSI_FIN %in% c("1", "2", "5"))), sep = "")
+
+cat("\n\n### Sivep - Srag",
+    "\n\nN de linhas: ", nrow(srag_sivep),
+    "\nNomes das colunas (",ncol(srag_sivep),") :", paste0(names(srag_sivep), sep = "\n"),
+    "\nCasos confirmados por vírus respiratórios: ", 
+    nrow(srag_sivep|>filter(CLASSI_FIN %in% c("1", "2", "5"))), sep = "")
+
+cat("\n\n### eSUS - SG",
+    "\n\nN de linhas: ", nrow(sg_esus),
+    "\nNomes das colunas (",ncol(sg_esus),") :", 
+    wrap_by_words(paste0(names(sg_esus), collapse = ", "), n = 4),
+    "\nCasos confirmados por vírus respiratórios: ", 
+    nrow(sg_esus|>filter(classificacaoFinal %in% c("1", "2", "5", "6"))), sep = "")
+
+
+```
+
+## Padronizando variáveis para linkage
+
+### Gal
+
+As datas foram padronizadas no formato aaaa/mm/dd, sem necessidade de retirar as barras, pelo fato de ser utilizada a similaridade de Hamming para comparação. Foram separados ano, mes e dia para conferência da validade das datas encontradas no banco. O sexo também foi padronizado pelo primeiro caracter da palavra que o representa. O tratamento dos nomes incluiu redução da capitalização das letras, retirada de acentos, preposições " da \| de \| do \| das \| dos \| del \| di " e de excesso de espaços, bem como foram extraídos os primeiros nomes para blocagem no relacionamento probabilístico. Por fim, também foi padronizada a UF pela sigla, e gerado um id para futura consulta no banco, visando a separação de registros pareados e não pareados, bem como a união destes para formação do banco final e geração de métricas sobre o relacionamento.
+
+```{r, pad_gal}
+#| echo: false
+
+glimpse(gal)
+
+
+unique(gal$paciente_data_nascimento)
+unique(gal$data_coleta)
+unique(gal$data_recebimento)
+unique(gal$data_processamento)
+
+## convertendo datas e separando anos e meses de datas importantes
+gal_ = gal
+
+## convertendo datas em formato de data e conferindo
+
+### data de nascimento
+gal_$dt_nasc = as.Date(gal_$paciente_data_nascimento)
+unique(gal_$dt_nasc)
+class(gal_$dt_nasc)
+
+### data de coleta
+gal_$dt_coleta =  as.Date(gal_$data_coleta)
+unique(gal_$dt_coleta)
+class(gal_$dt_coleta)
+
+### data de processamento
+gal_$dt_proc =  as.Date(gal_$data_processamento)
+unique(gal_$dt_proc)
+class(gal_$dt_proc)
+
+### data de recebimento
+gal_$dt_receb =  as.Date(gal_$data_recebimento)
+unique(gal_$dt_receb)
+class(gal_$dt_receb)
+
+
+## Extraíndo dia, mes e ano das datas
+### data de nascimento
+gal_$ano_nasc = as.double(format(gal_$dt_nasc,"%Y"))
+gal_$mes_nasc = as.double(format(gal_$dt_nasc,"%m"))
+gal_$dia_nasc = as.double(format(gal_$dt_nasc,"%d"))
+table(sort(gal_$ano_nasc, na.last = T), useNA = "always")
+table(sort(gal_$mes_nasc, na.last = T), useNA = "always")
+table(sort(gal_$dia_nasc, na.last = T), useNA = "always")
+
+### data de coleta
+gal_$ano_coleta = as.double(format(gal_$dt_coleta,"%Y"))
+gal_$mes_coleta = as.double(format(gal_$dt_coleta,"%m"))
+gal_$dia_coleta = as.double(format(gal_$dt_coleta,"%d"))
+table(sort(gal_$ano_coleta, na.last = T), useNA = "always")
+table(sort(gal_$mes_coleta, na.last = T), useNA = "always")
+table(sort(gal_$dia_coleta, na.last = T), useNA = "always")
+
+### data de processamento
+gal_$ano_receb = as.double(format(gal_$dt_receb,"%Y"))
+gal_$mes_receb = as.double(format(gal_$dt_receb,"%m"))
+gal_$dia_receb = as.double(format(gal_$dt_receb,"%d"))
+table(sort(gal_$ano_receb, na.last = T), useNA = "always")
+table(sort(gal_$mes_receb, na.last = T), useNA = "always")
+table(sort(gal_$dia_receb, na.last = T), useNA = "always")
+
+### data de recebimento
+gal_$ano_proc = as.double(format(gal_$dt_proc,"%Y"))
+gal_$mes_proc = as.double(format(gal_$dt_proc,"%m"))
+gal_$dia_proc = as.double(format(gal_$dt_proc,"%d"))
+table(sort(gal_$ano_proc, na.last = T), useNA = "always")
+table(sort(gal_$mes_proc, na.last = T), useNA = "always")
+table(sort(gal_$dia_proc, na.last = T), useNA = "always")
+
+
+
+## padronizando sexo
+gal_ = gal_|>
+  mutate(
+    paciente_sexo = case_when(
+      is.na(paciente_sexo) ~ "I",
+      .default = paciente_sexo),
+    paciente_sexo = recode(paciente_sexo, 
+                  "FEMININO" = "F",
+                  "MASCULINO" = "M",
+                  "IGNORADO" = "I",
+                  "N.I." = "I"))
+
+table(sort(gal_$paciente_sexo, na.last = T), useNA = "always")
+
+
+#TRATAR VARIAVEIS DE NOME
+
+#VARIAVEL Nome do NOME_PAC
+gal_ = gal_|>
+  mutate(across(c(paciente_nome, paciente_nome_mae), 
+                ~ rm_accent(.) %>%
+                  str_replace_all("[^[:alpha:]]", " ") %>%
+                  str_trim() %>%
+                  str_to_lower()|>
+                  str_replace_all( 
+                    regex( 
+                      "\\b(da|de|do|das|dos|del|di)\\b", 
+                      ignore_case = TRUE), " ") %>%
+                  str_squish()))
+
+unique(gal_$paciente_nome)
+unique(gal_$paciente_nome_mae)
+
+#SEPARAR NOME E SOBRENOME DA MÃE
+gal_ <- gal_ %>%
+  mutate(
+    # primeiro nome e restante (sobrenome)
+    pnome_mae     = word(paciente_nome_mae, 1),
+    sobrenome_mae = word(paciente_nome_mae, 2, -1),
+    pnome_pac     = word(paciente_nome, 1),
+    sobrenome_pac = word(paciente_nome, 2, -1)
+  )
+
+
+unique(gal_$pnome_mae)
+unique(gal_$sobrenome_mae)
+unique(gal_$pnome_pac)
+unique(gal_$sobrenome_pac)
+
+
+## Separando e padronizando UF
+gal_ <- gal_ |>
+  mutate(uf_res = factor(
+    dplyr::recode(
+      substr(paciente_municipio_ibge, 1, 2),
+      "11" = "RO",  # Rondônia
+      "12" = "AC",  # Acre
+      "13" = "AM",  # Amazonas
+      "14" = "RR",  # Roraima
+      "15" = "PA",  # Pará
+      "16" = "AP",  # Amapá
+      "17" = "TO",  # Tocantins
+      "21" = "MA",  # Maranhão
+      "22" = "PI",  # Piauí
+      "23" = "CE",  # Ceará
+      "24" = "RN",  # Rio Grande do Norte
+      "25" = "PB",  # Paraíba
+      "26" = "PE",  # Pernambuco
+      "27" = "AL",  # Alagoas
+      "28" = "SE",  # Sergipe
+      "29" = "BA",  # Bahia
+      "31" = "MG",  # Minas Gerais
+      "32" = "ES",  # Espírito Santo
+      "33" = "RJ",  # Rio de Janeiro
+      "35" = "SP",  # São Paulo
+      "41" = "PR",  # Paraná
+      "42" = "SC",  # Santa Catarina
+      "43" = "RS",  # Rio Grande do Sul
+      "50" = "MS",  # Mato Grosso do Sul
+      "51" = "MT",  # Mato Grosso
+      "52" = "GO",  # Goiás
+      "53" = "DF"   # Distrito Federal
+    ),
+    levels = c(
+      "RO","AC","AM","RR","PA","AP","TO",
+      "MA","PI","CE","RN","PB","PE","AL","SE","BA",
+      "MG","ES","RJ","SP",
+      "PR","SC","RS",
+      "MS","MT","GO","DF"
+    )
+  )
+)
+
+
+## colocando id para identificação futura, caso necessário
+
+gal_ = gal_ |>
+  mutate(id_gal = paste0("gal", formatC(
+    seq(1:nrow(gal_)),
+    width = 9,
+    format = "d",
+    flag = "0"
+  )))
+
+unique(gal_$id_gal)
+
+## salvando o tratamento
+write_parquet(gal_,paste0(pasta_interm,"dados_gal_pad.parquet"))
+
+```
+
+### Sivep - SG
+
+```{r, pad_sg_sivep, tidy=TRUE}
+#| echo: false
+
+glimpse(sg_sivep)
+
+unique(year(as.Date(sg_sivep$DT_NOTIFIC)))
+
+#TRATAR DATAS SRAG  
+sg_sivep = sg_sivep |>
+  mutate(across(.cols = starts_with("DT"), 
+                .fns =  ~case_when(
+                  str_count(.) > 5 ~ dmy(.),
+                  str_count(.) <= 5 ~ convertToDate(.))),
+    ano_nasc = as.double(year(DT_NASC)),
+    ano_coleta = as.double(year(DT_COLETA)),
+    ano_notific = as.double(year(DT_PREENC)),
+    ano_pri_sin = as.double(year(DT_PRISINT)),
+    mes_nasc = as.double(month(DT_NASC)),
+    mes_coleta = as.double(month(DT_COLETA)),
+    mes_notific = as.double(month(DT_PREENC)),
+    mes_pri_sin = as.double(month(DT_PRISINT)),
+    dia_nasc = as.double(day(DT_NASC)),
+    dia_coleta = as.double(day(DT_COLETA)),
+    dia_notific = as.double(day(DT_PREENC)),
+    dia_pri_sin = as.double(day(DT_PRISINT)))|>
+  dplyr::rename(
+    dt_nasc = DT_NASC,
+    dt_coleta = DT_COLETA,
+    dt_notific = DT_PREENC,
+    dt_pri_sin = DT_PRISINT)
+
+unique(sg_sivep$dt_nasc)
+unique(sg_sivep$dt_notific)
+unique(sg_sivep$dt_pri_sin)
+unique(sg_sivep$dt_coleta)
+class(sg_sivep$dt_nasc)
+class(sg_sivep$dt_notific)
+class(sg_sivep$dt_pri_sin)
+class(sg_sivep$dt_coleta)
+unique(sg_sivep$ano_nasc)
+unique(sg_sivep$mes_nasc)
+unique(sg_sivep$ano_notific)
+unique(sg_sivep$mes_notific)
+unique(sg_sivep$ano_pri_sin)
+unique(sg_sivep$mes_pri_sin)
+unique(sg_sivep$ano_coleta)
+unique(sg_sivep$mes_coleta)
+
+
+## padronizando sexo
+sg_sivep$SEXO = recode(sg_sivep$SEXO, 
+                  "2" = "F",
+                  "1" = "M",
+                  "9" = "I")
+
+unique(sg_sivep$SEXO)
+
+## criando id para identificação futura
+sg_sivep = sg_sivep |>
+  mutate(id_sg_sivep = paste0("sg_sivep", formatC(
+    seq(1:nrow(sg_sivep)),
+    width = 9,
+    format = "d",
+    flag = "0"
+  )))
+
+unique(sg_sivep$id_sg_sivep)
+
+#TRATAR VARIAVEIS DE NOME
+
+sg_sivep <- sg_sivep %>%
+  mutate(across(c(NOME_MAE, NOME_PAC), 
+                ~ rm_accent(.) %>%
+                  str_replace_all("[^[:alpha:]]", " ") %>%
+                  str_trim() %>%
+                  str_to_lower()|>
+                  str_replace_all( 
+                    regex( 
+                      "\\b(da|de|do|das|dos|del|di)\\b", 
+                      ignore_case = TRUE), " ") %>%
+                  str_squish()))|>
+   dplyr::rename("paciente_nome_mae" = NOME_MAE,
+                 "paciente_nome" = NOME_PAC)
+
+
+unique(sg_sivep$paciente_nome_mae)
+unique(sg_sivep$paciente_nome)
+
+#SEPARAR NOME E SOBRENOME DA MÃE
+sg_sivep <- sg_sivep %>%
+  mutate(
+    # primeiro nome e restante (sobrenome)
+    pnome_mae     = word(paciente_nome_mae, 1),
+    sobrenome_mae = word(paciente_nome_mae, 2, -1),
+    pnome_pac     = word(paciente_nome, 1),
+    sobrenome_pac = word(paciente_nome, 2, -1)
+  )
+
+
+unique(sg_sivep$pnome_mae)
+unique(sg_sivep$sobrenome_mae)
+unique(sg_sivep$pnome_pac)
+unique(sg_sivep$sobrenome_pac)
+
+
+# Padronizando estado
+sg_sivep <- sg_sivep %>%
+  mutate(uf_res = factor(
+    dplyr::recode(
+      substr(COD_UFRES, 1, 2),
+      "11" = "RO",  # Rondônia
+      "12" = "AC",  # Acre
+      "13" = "AM",  # Amazonas
+      "14" = "RR",  # Roraima
+      "15" = "PA",  # Pará
+      "16" = "AP",  # Amapá
+      "17" = "TO",  # Tocantins
+      "21" = "MA",  # Maranhão
+      "22" = "PI",  # Piauí
+      "23" = "CE",  # Ceará
+      "24" = "RN",  # Rio Grande do Norte
+      "25" = "PB",  # Paraíba
+      "26" = "PE",  # Pernambuco
+      "27" = "AL",  # Alagoas
+      "28" = "SE",  # Sergipe
+      "29" = "BA",  # Bahia
+      "31" = "MG",  # Minas Gerais
+      "32" = "ES",  # Espírito Santo
+      "33" = "RJ",  # Rio de Janeiro
+      "35" = "SP",  # São Paulo
+      "41" = "PR",  # Paraná
+      "42" = "SC",  # Santa Catarina
+      "43" = "RS",  # Rio Grande do Sul
+      "50" = "MS",  # Mato Grosso do Sul
+      "51" = "MT",  # Mato Grosso
+      "52" = "GO",  # Goiás
+      "53" = "DF"   # Distrito Federal
+    ),
+    levels = c(
+      "RO","AC","AM","RR","PA","AP","TO",
+      "MA","PI","CE","RN","PB","PE","AL","SE","BA",
+      "MG","ES","RJ","SP",
+      "PR","SC","RS",
+      "MS","MT","GO","DF"
+    )
+  )
+)
+unique(sg_sivep$ano_notific)
+
+## salvando o tratamento
+write_parquet(sg_sivep|>
+                filter(ano_notific == 2022),paste0(pasta_interm,"dados_sg_sivep_pad_22.parquet"))
+
+write_parquet(sg_sivep|>
+                filter(ano_notific == 2023),paste0(pasta_interm,"dados_sg_sivep_pad_23.parquet"))
+
+write_parquet(sg_sivep|>
+                filter(ano_notific == 2024),paste0(pasta_interm,"dados_sg_sivep_pad_24.parquet"))
+
+write_parquet(sg_sivep|>
+                filter(ano_notific == 2025),paste0(pasta_interm,"dados_sg_sivep_pad_25.parquet"))
+```
+
+### Sivep - Srag
+
+```{r, pad_srag_sivep}
+#| echo: false
+
+glimpse(srag_sivep)
+
+
+#TRATAR DATAS SRAG  
+srag_sivep = srag_sivep |>
+  mutate(across(.cols = starts_with("DT_"), 
+                .fns =  ~case_when(
+                  str_count(.) > 5 ~ ymd(.),
+                  str_count(.) <= 5 ~ convertToDate(.))),
+    ano_nasc = as.double(year(DT_NASC)),
+    ano_coleta = as.double(year(DT_COLETA)),
+    ano_notific = as.double(year(DT_NOTIFIC)),
+    ano_pri_sin = as.double(year(DT_SIN_PRI)),
+    mes_nasc = as.double(month(DT_NASC)),
+    mes_coleta = as.double(month(DT_COLETA)),
+    mes_notific = as.double(month(DT_NOTIFIC)),
+    mes_pri_sin = as.double(month(DT_SIN_PRI)),
+    dia_nasc = as.double(day(DT_NASC)),
+    dia_coleta = as.double(day(DT_COLETA)),
+    dia_notific = as.double(day(DT_NOTIFIC)),
+    dia_pri_sin = as.double(day(DT_SIN_PRI)))|>
+  dplyr::rename(
+    dt_nasc = DT_NASC,
+    dt_coleta = DT_COLETA,
+    dt_notific = DT_NOTIFIC,
+    dt_pri_sin = DT_SIN_PRI)
+
+unique(srag_sivep$dt_nasc)
+unique(srag_sivep$dt_notific)
+unique(srag_sivep$dt_pri_sin)
+unique(srag_sivep$dt_coleta)
+class(srag_sivep$dt_nasc)
+class(srag_sivep$dt_notific)
+class(srag_sivep$dt_pri_sin)
+class(srag_sivep$dt_coleta)
+unique(srag_sivep$ano_nasc)
+unique(srag_sivep$mes_nasc)
+unique(srag_sivep$ano_notific)
+unique(srag_sivep$mes_notific)
+unique(srag_sivep$ano_pri_sin)
+unique(srag_sivep$mes_pri_sin)
+unique(srag_sivep$ano_coleta)
+unique(srag_sivep$mes_coleta)
+
+
+## criando id para identificação futura
+srag_sivep = srag_sivep |>
+  mutate(id_srag_sivep = paste0("srag_sivep", formatC(
+    seq(1:nrow(srag_sivep)),
+    width = 9,
+    format = "d",
+    flag = "0"
+  )))
+
+
+unique(srag_sivep$id_srag_sivep)
+
+#TRATAR VARIAVEIS DE NOME
+srag_sivep = srag_sivep|>
+  mutate(across(c(NM_PACIENT, NM_MAE_PAC), 
+                ~ rm_accent(.) %>%
+                  str_replace_all("[^[:alpha:]]", " ") %>%
+                  str_trim() %>%
+                  str_to_lower()|>
+                  str_replace_all( 
+                    regex( 
+                      "\\b(da|de|do|das|dos|del|di)\\b", 
+                      ignore_case = TRUE), " ") %>%
+                  str_squish()))|>
+   dplyr::rename("paciente_nome_mae" = NM_MAE_PAC,
+                 "paciente_nome" = NM_PACIENT)
+
+unique(srag_sivep$paciente_nome)
+unique(srag_sivep$paciente_nome_mae)
+
+#SEPARAR NOME E SOBRENOME DA MÃE
+srag_sivep <- srag_sivep %>%
+  mutate(
+    # primeiro nome e restante (sobrenome)
+    pnome_mae     = word(paciente_nome_mae, 1),
+    sobrenome_mae = word(paciente_nome_mae, 2, -1),
+    pnome_pac     = word(paciente_nome, 1),
+    sobrenome_pac = word(paciente_nome, 2, -1)
+  )
+
+
+unique(srag_sivep$pnome_mae)
+unique(srag_sivep$sobrenome_mae)
+unique(srag_sivep$pnome_pac)
+unique(srag_sivep$sobrenome_pac)
+
+
+class(srag_sivep$SG_UF)
+
+# Padronizando estado de residencia
+srag_sivep <- srag_sivep %>%
+  mutate(uf_res = factor(SG_UF,
+    levels = c(
+      "RO","AC","AM","RR","PA","AP","TO",
+      "MA","PI","CE","RN","PB","PE","AL","SE","BA",
+      "MG","ES","RJ","SP",
+      "PR","SC","RS",
+      "MS","MT","GO","DF"
+    )
+  )
+)
+
+
+## salvando o tratamento
+write_parquet(srag_sivep,paste0(pasta_interm,"dados_srag_sivep_pad.parquet"))
+```
+
+### eSUS - SG universal
+
+```{r, pad_sg_esus}
+glimpse(sg_esus)
+
+unique(year(as.Date(sg_esus$dataNotificacao)))
+
+sg_esus_ = sg_esus|>
+  mutate(anoNotific = year(ymd(dataNotificacao)))|>
+  filter(anoEpiSintomas >=2023 & anoEpiSintomas <=2024)
+
+unique(sg_esus_$anoNotific)
+
+unique(sg_esus$dataNascimento)
+unique(sg_esus$dataNotificacao)
+unique(sg_esus$dataInicioSintomas)
+unique(sg_esus$dataTeste)
+
+
+### data de nascimento
+sg_esus_$dataNascimento = ymd(sg_esus_$dataNascimento)
+unique(sg_esus_$dataNascimento)
+class(sg_esus_$dataNascimento)
+
+### data de coleta
+sg_esus_$dataTeste =  ymd(sg_esus_$dataTeste)
+unique(sg_esus_$dataTeste)
+class(sg_esus_$dataTeste)
+
+### data de notificação
+sg_esus_$dataNotificacao =  ymd(sg_esus_$dataNotificacao)
+unique(sg_esus_$dataNotificacao)
+class(sg_esus_$dataNotificacao)
+
+### data de inicio dos sintomas
+sg_esus_$dataInicioSintomas =  ymd(sg_esus_$dataInicioSintomas)
+unique(sg_esus_$dataInicioSintomas)
+class(sg_esus_$dataInicioSintomas)
+
+
+#TRATAR DATAS esus  
+sg_esus_ = sg_esus_ |>
+  mutate(
+    ano_nasc = as.double(year(dataNascimento)),
+    ano_coleta = as.double(year(dataTeste)),
+    ano_notific = as.double(year(dataNotificacao)),
+    ano_pri_sin = as.double(year(dataInicioSintomas)),
+    mes_nasc = as.double(month(dataNascimento)),
+    mes_coleta = as.double(month(dataTeste)),
+    mes_notific = as.double(month(dataNotificacao)),
+    mes_pri_sin = as.double(month(dataInicioSintomas)),
+    dia_nasc = as.double(day(dataNascimento)),
+    dia_coleta = as.double(day(dataTeste)),
+    dia_notific = as.double(day(dataNotificacao)),
+    dia_pri_sin = as.double(day(dataInicioSintomas)))|>
+  dplyr::rename(
+    dt_nasc = dataNascimento,
+    dt_coleta = dataTeste,
+    dt_notific = dataNotificacao,
+    dt_pri_sin = dataInicioSintomas)
+
+unique(sg_esus_$dt_nasc)
+unique(sg_esus_$dt_notific)
+unique(sg_esus_$dt_pri_sin)
+unique(sg_esus_$dt_coleta)
+class(sg_esus_$dt_nasc)
+class(sg_esus_$dt_notific)
+class(sg_esus_$dt_pri_sin)
+class(sg_esus_$dt_coleta)
+unique(sg_esus_$ano_nasc)
+unique(sg_esus_$mes_nasc)
+unique(sg_esus_$ano_notific)
+unique(sg_esus_$mes_notific)
+unique(sg_esus_$ano_pri_sin)
+unique(sg_esus_$mes_pri_sin)
+unique(sg_esus_$ano_coleta)
+unique(sg_esus_$mes_coleta)
+
+
+## padronizando sexo
+sg_esus_$sexo = recode(sg_esus_$sexo, 
+                  "2" = "F",
+                  "1" = "M",
+                  "9" = "I")
+
+unique(sg_esus_$sexo)
+
+#TRATAR VARIAVEIS DE NOME
+
+sg_esus_ <- sg_esus_ %>%
+  mutate(across(c(nomeCompleto, nomeMae), 
+                ~ rm_accent(.) %>%
+                  str_replace_all("[^[:alpha:]]", " ") %>%
+                  str_trim() %>%
+                  str_to_lower()|>
+                  str_replace_all( 
+                    regex( 
+                      "\\b(da|de|do|das|dos|del|di)\\b", 
+                      ignore_case = TRUE), " ") %>%
+                  str_squish()))|>
+   dplyr::rename("paciente_nome_mae" = nomeMae,
+                 "paciente_nome" = nomeCompleto)
+
+
+unique(sg_esus_$paciente_nome_mae)
+unique(sg_esus_$paciente_nome)
+
+#SEPARAR NOME E SOBRENOME DA MÃE
+sg_esus_ <- sg_esus_ %>%
+  mutate(
+    # primeiro nome e restante (sobrenome)
+    pnome_mae     = word(paciente_nome_mae, 1),
+    sobrenome_mae = word(paciente_nome_mae, 2, -1),
+    pnome_pac     = word(paciente_nome, 1),
+    sobrenome_pac = word(paciente_nome, 2, -1))
+
+
+unique(sg_esus_$pnome_mae)
+unique(sg_esus_$sobrenome_mae)
+unique(sg_esus_$pnome_pac)
+unique(sg_esus_$sobrenome_pac)
+
+
+# Padronizando estado
+sg_esus_ <- sg_esus_ %>%
+  mutate(uf_res = factor(
+    dplyr::recode(
+      substr(estadoNotificacaoIBGE, 1, 2),
+      "11" = "RO",  # Rondônia
+      "12" = "AC",  # Acre
+      "13" = "AM",  # Amazonas
+      "14" = "RR",  # Roraima
+      "15" = "PA",  # Pará
+      "16" = "AP",  # Amapá
+      "17" = "TO",  # Tocantins
+      "21" = "MA",  # Maranhão
+      "22" = "PI",  # Piauí
+      "23" = "CE",  # Ceará
+      "24" = "RN",  # Rio Grande do Norte
+      "25" = "PB",  # Paraíba
+      "26" = "PE",  # Pernambuco
+      "27" = "AL",  # Alagoas
+      "28" = "SE",  # Sergipe
+      "29" = "BA",  # Bahia
+      "31" = "MG",  # Minas Gerais
+      "32" = "ES",  # Espírito Santo
+      "33" = "RJ",  # Rio de Janeiro
+      "35" = "SP",  # São Paulo
+      "41" = "PR",  # Paraná
+      "42" = "SC",  # Santa Catarina
+      "43" = "RS",  # Rio Grande do Sul
+      "50" = "MS",  # Mato Grosso do Sul
+      "51" = "MT",  # Mato Grosso
+      "52" = "GO",  # Goiás
+      "53" = "DF"   # Distrito Federal
+    ),
+    levels = c(
+      "RO","AC","AM","RR","PA","AP","TO",
+      "MA","PI","CE","RN","PB","PE","AL","SE","BA",
+      "MG","ES","RJ","SP",
+      "PR","SC","RS",
+      "MS","MT","GO","DF"
+    )
+  )
+)
+
+
+## criando id para identificação futura
+sg_esus_ = sg_esus_ |>
+  mutate(id_sg_esus_ = paste0("sg_esus_", formatC(
+    seq(1:nrow(sg_esus_)),
+    width = 9,
+    format = "d",
+    flag = "0"
+  )))
+
+unique(sg_esus_$id_sg_esus_)
+
+glimpse(sg_esus_|>
+          select(id_sg_esus_, uf_res, paciente_nome, paciente_nome_mae,
+                 pnome_pac, sobrenome_pac, pnome_mae, sobrenome_mae,
+                 dt_nasc, dt_notific, dt_pri_sin, dt_coleta,
+                 ano_nasc, mes_nasc, ano_notific, mes_notific, 
+                 ano_pri_sin, mes_pri_sin, ano_coleta, mes_coleta))
+
+## salvando o tratamento
+write_parquet(sg_esus_,paste0(pasta_interm,"dados_sg_esus_pad.parquet"))
+
+```
+
+## Preparando gal para link - pivot e dedup
+
+Antes do relacionamento propriamente dito, foram removidas as duplicidades em ambos os bancos por método determinístico, considerando as seguintes variáveis identificadoras: “nome do paciente”; “nome da mãe do paciente”; “data de nascimento”; “sexo”, “UF de residência”, além da "data do início dos sintomas" para o Sivep-gripe e "data da coleta" para o Gal.
+
+Para a deduplicação específica dos dados do GAL, os registros que obtiveram a mesma chave porem apresentaram exames para tipos de vírus diferentes foram unificados em uma única observação, realizando um processo de pivotagem. Para cada vírus, foram separadas as seguintes varíaveis de interesse: “agravo”, “metodo”, “resultado”, "subtipagem", "linhagem" e "gene". Após isso, foram criadas novas colunas, nomeadas com a combinação do nome do vírus em questão e a váriável de interesse (ex: flu_a_h1n1_pdm09_metodo, flu_a_h1n1_pdm09_resultado). Quando foi encontrado mais de um exame para o mesmo vírus na mesma data de coleta, foi dada preferência para o resultado positivo. Após fazer o tratamento individual para cada vírus, foram deduplicadas as chaves contendo a data de coleta, e unificado o banco com a união das colunas referentes a cada vírus, gerando o banco deduplicado.
+
+### Carregando o banco
+
+```{r read_padr}
+
+gal_ = read_parquet(paste0(pasta_inter_link,"dados_gal_pad.parquet"))
+glimpse(gal_)
+unique(gal_$virus)
+```
+
+### Fazendo a chave
+
+```{r, dedup_chave}
+
+glimpse(gal_)
+
+view(table(year(gal_$dt_coleta), useNA = "always"), n = 10000)
+
+# a = data.frame(table(year(gal_$dt_coleta),month(gal_$dt_coleta)))|>
+#   pivot_wider(
+#     names_from = Var2,
+#     values_from = Freq 
+#   )
+# view(a)
+# b = data.frame(table(year(gal_$dt_receb),month(gal_$dt_receb)))|>
+#   pivot_wider(
+#     names_from = Var2,
+#     values_from = Freq 
+#   )
+# view(b)
+# c = data.frame(table(year(gal_$data_recebimento),month(gal_$data_recebimento)))|>
+#   pivot_wider(
+#     names_from = Var2,
+#     values_from = Freq 
+#   )
+# view(c)
+
+gal_link = gal_ |>
+  mutate(chave = paste0(
+    paciente_nome,
+    paciente_nome_mae,
+    uf_res,
+    paciente_sexo,
+    dt_nasc,
+    dt_coleta),
+    chave = str_replace_all(chave,"\\s+", ""))
+
+unique(gal_link$chave)
+
+```
+
+### Definindo nomes para grupos de vírus estudados
+
+```{r, rename_virus_list}
+
+virus_class_gal = c(
+  "Coronavirus SARS-CoV2" = "Coronavírus",
+  "Adenovirus" = "Adenovirus",
+  "Rinovirus" = "Rinovirus",
+  "Metapneumovirus" = "Metapneumovirus",
+  "Virus Sincicial Respiratorio" = "VSR",
+  "Influenza B" = "Influenza B",
+  "Influenza A" = "Influenza A",
+  "Coronavirus 229E" = "Coronavírus",
+  "Coronavirus HKU1" = "Coronavírus",
+  "Enterovirus" = "OVR",
+  "Coronavirus OC43" = "Coronavírus",
+  "Parainfluenza tipo 1" = "OVR",
+  "Parainfluenza tipo 2" = "OVR",
+  "Parainfluenza tipo 4" = "OVR",
+  "Coronavirus NL63" = "Coronavírus",
+  "Parainfluenza tipo 3" = "OVR",
+  "Bocavirus" = "OVR",
+  "Parainfluenza \"2\"" = "OVR",
+  "Parainfluenza \"3\"" = "OVR",
+  "Parainfluenza \"1\"" = "OVR",
+  "Adenovirus humano" = "Adenovirus",
+  "Rinovirus humano A/B" = "Rinovirus",
+  "Parechovirus humano" = "OVR",
+  "Influenza A (H3/sazonal)" = "Influenza A",
+  "Virus sincicial respiratorio B" = "VSR",
+  "Influenza A (H5N1)" = "Influenza A",
+  "Metapneumovirus humano A" = "Metapneumovirus",
+  "Metapneumovirus humano B" = "Metapneumovirus",
+  "Virus sincicial respiratorio A" = "VSR",
+  "Influenza A (H7N9)" = "Influenza A",
+  "Influenza A (H1N1)pdm09" = "Influenza A")
+
+virus_rename = c(
+  "Coronavirus SARS-CoV2" = "SARS-CoV2",
+  "Adenovirus" = "Adenovirus não especificado",
+  "Rinovirus" = "Rinovirus não especificado",
+  "Metapneumovirus" = "Metapneumovirus não especificado",
+  "Virus Sincicial Respiratorio" = "VSR não especificado",
+  "Influenza B" = "Influenza B",
+  "Influenza A" = "Influenza A",
+  "Coronavirus 229E" = "HCoV-229E",
+  "Coronavirus HKU1" = "HCoV-HKU1",
+  "Enterovirus" = "Enterovírus não especificado",
+  "Coronavirus OC43" = "HCoV-OC43",
+  "Parainfluenza tipo 1" = "Parainfluenza tipo 1",
+  "Parainfluenza tipo 2" = "Parainfluenza tipo 2",
+  "Parainfluenza tipo 4" = "Parainfluenza tipo 4",
+  "Coronavirus NL63" = "HCoV-NL63",
+  "Parainfluenza tipo 3" = "Parainfluenza tipo 3",
+  "Bocavirus" = "Bocavirus",
+  "Parainfluenza \"2\"" = "Parainfluenza tipo 2",
+  "Parainfluenza \"3\"" = "Parainfluenza tipo 3",
+  "Parainfluenza \"1\"" = "Parainfluenza tipo 1",
+  "Adenovirus humano" = "Adenovirus não especificado",
+  "Rinovirus humano A/B" = "Rinovirus não especificado",
+  "Parechovirus humano" = "Parechovirus humano",
+  "Influenza A (H3/sazonal)" = "Influenza A H3/sazonal",
+  "Virus sincicial respiratorio B" = "VSR tipo B",
+  "Influenza A (H5N1)" = "Influenza A H5N1",
+  "Metapneumovirus humano A" = "Metapneumovirus A",
+  "Metapneumovirus humano B" = "Metapneumovirus B",
+  "Virus sincicial respiratorio A" = "VSR tipo A",
+  "Influenza A (H7N9)" = "Influenza A H7N9",
+  "Influenza A (H1N1)pdm09" = "Influenza A H1N1-pdm09")
+
+virus_col = c(
+  "Influenza A" = "flu_a_ne",
+  "Influenza A (H1N1)pdm09" = "flu_a_h1n1_pdm09",
+  "Influenza A (H3/sazonal)" = "flu_a_h3_sazo",
+  "Influenza A (H5N1)" = "flu_a_h5n1",
+  "Influenza A (H7N9)" = "flu_a_h7n9",
+  "Influenza B" = "flu_b_ne",
+  "Coronavirus SARS-CoV2" = "sars_cov_2",
+  "Coronavirus 229E" = "hcov_229e",
+  "Coronavirus HKU1" = "hcov_hku1",
+  "Coronavirus OC43" = "hcov_oc43",
+  "Coronavirus NL63" = "hcov_nl63",
+  "Virus Sincicial Respiratorio" = "vsr_ne",
+  "Virus sincicial respiratorio A" = "vsr_a",
+  "Virus sincicial respiratorio B" = "vsr_b",
+  "Metapneumovirus" = "mpv_ne",
+  "Metapneumovirus humano A" = "mpv_a",
+  "Metapneumovirus humano B" = "mpv_b",
+  "Rinovirus" = "rino_ne",
+  "Rinovirus humano A/B" = "rino_ab",
+  "Adenovirus" = "adeno",
+  "Adenovirus humano" = "adeno",
+  "Parainfluenza \"1\"" = "paraflu_1",
+  "Parainfluenza \"2\"" = "paraflu_2",
+  "Parainfluenza \"3\"" = "paraflu_3",
+  "Parainfluenza tipo 1" = "paraflu_1",
+  "Parainfluenza tipo 2" = "paraflu_2",
+  "Parainfluenza tipo 3" = "paraflu_3",
+  "Parainfluenza tipo 4" = "paraflu_4",
+  "Bocavirus" = "boca",
+  "Enterovirus" = "entero",
+  "Parechovirus humano" = "parecho")
+
+```
+
+### Renomeando exposições para pivot
+
+```{r, rename_virus}
+
+gal_link = gal_link|>
+  mutate(virus_class = dplyr::recode(virus, !!!virus_class_gal),
+         virus_col = dplyr::recode(virus, !!!virus_col),
+         virus = dplyr::recode(virus, !!!virus_rename))
+
+a = unique(gal_link|>
+         select(virus_col, virus_class))
+
+view(a)
+
+glimpse(gal_link)
+
+gal_link_ = gal_link|>
+  pivot_wider(
+    names_from = virus_col,
+    values_from = c(
+      virus_class,
+      virus,
+      no_agravo,
+      no_agravo_req,
+      exame,
+      metodo,
+      resultado,
+      subtipagem,
+      linhagem,
+      gene),
+    names_glue = "{virus_col}_{.value}"
+  )
+
+table(
+  sort(gal_link_$`rino_ne_virus`, na.last = T),
+  sort(gal_link_$`rino_ne_resultado`, na.last = T), 
+  useNA = "always")
+
+glimpse(gal_link_)
+view(gal_link_)
+
+
+gal_link_2 = tibble(chave = unique(gal_link_$chave))
+
+gal_link_ = gal_link_|>
+  select(
+    paciente_municipio_ibge:chave,
+    starts_with("flu_a_h1n1_pdm09"),
+    starts_with("flu_a_h3_sazo"),
+    starts_with("flu_a_h5n1"),
+    starts_with("flu_a_h7n9"),
+    starts_with("flu_a_ne"),
+    starts_with("flu_b_ne"),
+    starts_with("sars_cov_2"),
+    starts_with("hcov_229e"),
+    starts_with("hcov_hku1"),
+    starts_with("hcov_nl63"),
+    starts_with("hcov_oc43"),
+    starts_with("vsr_a"),
+    starts_with("vsr_b"),
+    starts_with("vsr_ne"),
+    starts_with("adeno"),
+    starts_with("mpv_a"),
+    starts_with("mpv_b"),
+    starts_with("mpv_ne"),
+    starts_with("rino_ab"),
+    starts_with("rino_ne"),
+    starts_with("paraflu_1"),
+    starts_with("paraflu_2"),
+    starts_with("paraflu_3"),
+    starts_with("paraflu_4"),
+    starts_with("boca"),
+    starts_with("entero"),
+    starts_with("parecho"),
+    starts_with("NA_")
+  )
+
+names(gal_link_)
+
+nrow(gal_link_)
+
+write_parquet(gal_link_,paste0(pasta_interm,"gal_pivot_geral.parquet"))
+```
+
+### Fazendo o dedup deterministico
+
+#### lendo o banco
+
+```{r, gal_read_pre_pivot}
+gal_link_ = read_parquet(paste0(pasta_interm,"gal_pivot_geral.parquet"))
+```
+
+#### Testando dedup
+
+```{r, test_loop}
+unique(gal_$resultado)
+
+# Vetor com todos os prefixos dos vírus
+v <- "flu_a_ne"
+
+  # Nome do objeto dinamicamente
+  obj_name <- paste0("gal_link_", v)
+  
+  # Nome da coluna de resultado
+  col_resultado <- paste0(v, "_resultado")
+  
+  
+  df = gal_link_ |>
+    filter(!is.na(.data[[paste0(v, "_exame")]])) |>
+    select(paciente_nome, dt_coleta, chave, starts_with(v))
+  
+  df$chave  
+  
+  a = nrow(df)
+  c_ = df|>
+    filter(.data[[col_resultado]] %in% c(
+        "Positivo", 
+        "Detectavel",
+        "Positivo / Detectavel"))|>
+    nrow()
+  
+  a
+  c_
+  
+  df = df |>
+    mutate(prioridade = case_when(
+      .data[[col_resultado]] %in% c(
+        "Positivo", 
+        "Detectavel",
+        "Positivo / Detectavel") ~ 2,
+      .data[[col_resultado]] %in% c(
+        "Negativo", 
+        "Nao Detectavel",
+        "Negativo / Nao Detectavel") ~ 1,
+      .default = 0
+    )) |>
+    arrange(desc(prioridade), dt_coleta) |>
+    distinct(chave, .keep_all = TRUE) |>
+    select(-prioridade, -dt_coleta) |>
+    filter(paciente_nome != "")
+  
+table(df[[col_resultado]])
+  
+  b = nrow(df)
+  d_ = df|>
+    filter(
+      .data[[col_resultado]] %in% c(
+        "Positivo", 
+        "Detectavel",
+        "Positivo / Detectavel"))|>
+    nrow()
+  
+  b
+  d_
+  
+  # Criação do dataframe filtrado
+  assign(obj_name, df)
+  
+  # Exibir informações básicas
+  
+  cat("\n### ", v, "\n", sep = "")
+  cat("N de linhas geral: ", 
+      formatC(a,
+        format = "f",
+        digits = 0,
+        big.mark = ".",
+        decimal.mark = ","), "\n", sep = "")
+  cat("N de positivos geral: ", formatC(c_,
+                                    format = "f",
+                                    digits = 0,
+                                    big.mark = ".",
+                                    decimal.mark = ","), " (",
+      formatC(c_/a*100,
+        format = "f",
+        digits = 1,
+        big.mark = ".",
+        decimal.mark = ","), "%)\n\n", sep = "")
+  cat("N de linhas deduplicadas: ", formatC(b,
+                                    format = "f",
+                                    digits = 0,
+                                    big.mark = ".",
+                                    decimal.mark = ","), "\n", sep = "")
+  cat("N de positivos deduplicados: ", formatC(d_,
+                                    format = "f",
+                                    digits = 0,
+                                    big.mark = ".",
+                                    decimal.mark = ","), " (",
+      formatC(d_/b*100,
+        format = "f",
+        digits = 1,
+        big.mark = ".",
+        decimal.mark = ","), "%)\n\n", sep = "")
+  cat("Diferença de linhas na deduplicação: ", formatC(a-b,
+                                    format = "f",
+                                    digits = 0,
+                                    big.mark = ".",
+                                    decimal.mark = ","), " (",
+      formatC((a-b)/a*100,
+        format = "f",
+        digits = 1,
+        big.mark = ".",
+        decimal.mark = ","), "%)\n", sep = "")
+  cat("Diferença de positivos na deduplicação: ", formatC(c_-d_,
+                                    format = "f",
+                                    digits = 0,
+                                    big.mark = ".",
+                                    decimal.mark = ","), " (",
+      formatC((c_-d_)/c_*100,
+        format = "f",
+        digits = 1,
+        big.mark = ".",
+        decimal.mark = ","), "%)\n\n", sep = "")
+  
+  nomes_ = tibble(nomes = sort(get(obj_name)[["paciente_nome"]]))
+  
+  chaves_ = tibble(chaves = sort(get(obj_name)[["chave"]]))
+  
+  cat("Nomes únicos: ", formatC(n_distinct(nomes_$nomes),
+                                    format = "f",
+                                    digits = 0,
+                                    big.mark = ".",
+                                    decimal.mark = ","), "\n", sep = "")
+  
+  cat("Nomes repetidos: ", formatC(b - n_distinct(nomes_$nomes),
+                                    format = "f",
+                                    digits = 0,
+                                    big.mark = ".",
+                                    decimal.mark = ","), " (",
+      formatC((b - n_distinct(nomes_$nomes))/b*100,
+        format = "f",
+        digits = 1,
+        big.mark = ".",
+        decimal.mark = ","), "%)\n\n", sep = "")
+   
+  cat("Chaves únicas: ", formatC(n_distinct(chaves_$chaves),
+                                    format = "f",
+                                    digits = 0,
+                                    big.mark = ".",
+                                    decimal.mark = ","), "\n", sep = "")
+  
+  cat("Chaves repetidas: ", formatC(b - n_distinct(chaves_$chaves),
+                                    format = "f",
+                                    digits = 0,
+                                    big.mark = ".",
+                                    decimal.mark = ","), " (",
+      formatC((length(chaves_$chaves) - n_distinct(chaves_$chaves))/
+                length(chaves_$chaves)*100,
+        format = "f",
+        digits = 1,
+        big.mark = ".",
+        decimal.mark = ","), "%)\n\n", sep = "")
+  
+  
+  cat("Vírus selecionados: ", unique(get(obj_name)[[paste0(v, "_virus")]]), "\n\n\n")
+  
+  teste_nomes = tibble(nomes = sort(head(get(obj_name)[["paciente_nome"]], 60)))
+  print(teste_nomes, n=60)
+  
+
+
+```
+
+### Dedup loop de fato
+
+```{r, gal_loop_dedup_sep_virus}
+
+# Vetor com todos os prefixos dos vírus
+virus_list <- c(
+  "flu_a_h1n1_pdm09", "flu_a_h3_sazo", "flu_a_h5n1", "flu_a_h7n9",
+  "flu_a_ne", "flu_b_ne", "sars_cov_2", "hcov_229e", "hcov_hku1",
+  "hcov_nl63", "hcov_oc43", "vsr_a", "vsr_b", "vsr_ne", "adeno",
+  "mpv_a", "mpv_b", "mpv_ne", "rino_ab", "rino_ne", "paraflu_1",
+  "paraflu_2", "paraflu_3", "paraflu_4", "boca", "entero", "parecho"
+)
+
+unique(gal_$resultado)
+
+
+count = gal_link|>
+  summarise(
+    virus_class = sum(!is.na(virus_class)),
+    virus = sum(!is.na(virus)),
+    no_agravo = sum(!is.na(no_agravo)),
+    no_agravo_req = sum(!is.na(no_agravo_req)),
+    exame = sum(!is.na(exame)),
+    subtipagem = sum(!is.na(subtipagem)),
+    linhagem = sum(!is.na(linhagem)),
+    gene = sum(!is.na(gene))
+  )
+
+# Loop para gerar os dataframes e exibir informações
+for (v in virus_list) {
+  # Nome do objeto dinamicamente
+  obj_name <- paste0("gal_link_", v)
+  
+  # Nome da coluna de resultado
+  col_resultado <- paste0(v, "_resultado")
+  
+  
+  df = gal_link_ |>
+    filter(!is.na(.data[[paste0(v, "_exame")]])) |>
+    select(paciente_nome, dt_coleta, chave, starts_with(v))
+  
+  a = nrow(df)
+  c_ = df|>
+    filter(.data[[col_resultado]] %in% c(
+        "Positivo", 
+        "Detectavel",
+        "Positivo / Detectavel"))|>
+    nrow()
+
+  df = df |>
+    mutate(prioridade = case_when(
+      .data[[col_resultado]] %in% c(
+        "Positivo", 
+        "Detectavel",
+        "Positivo / Detectavel") ~ 2,
+      .data[[col_resultado]] %in% c(
+        "Negativo", 
+        "Nao Detectavel",
+        "Negativo / Nao Detectavel") ~ 1,
+      .default = 0
+    )) |>
+    arrange(desc(prioridade), dt_coleta) |>
+    distinct(chave, .keep_all = TRUE) |>
+    select(-prioridade, -dt_coleta) |>
+    filter(paciente_nome != "")
+  
+  b = nrow(df)
+  d_ = df|>
+    filter(
+      .data[[col_resultado]] %in% c(
+        "Positivo", 
+        "Detectavel",
+        "Positivo / Detectavel"))|>
+    nrow()
+  
+  
+  # Criação do dataframe filtrado
+  assign(obj_name, df)
+  
+  # Exibir informações básicas
+  
+  cat("\n\n\n###  ", v, "  ###\n\n", sep = "")
+  cat("N de linhas geral: ", 
+      formatC(a,
+        format = "f",
+        digits = 0,
+        big.mark = ".",
+        decimal.mark = ","), "\n", sep = "")
+  cat("N de positivos geral: ", formatC(c_,
+                                    format = "f",
+                                    digits = 0,
+                                    big.mark = ".",
+                                    decimal.mark = ","), " (",
+      formatC(c_/a*100,
+        format = "f",
+        digits = 1,
+        big.mark = ".",
+        decimal.mark = ","), "%)\n\n", sep = "")
+  cat("N de linhas deduplicadas: ", formatC(b,
+                                    format = "f",
+                                    digits = 0,
+                                    big.mark = ".",
+                                    decimal.mark = ","), "\n", sep = "")
+  cat("N de positivos deduplicados: ", formatC(d_,
+                                    format = "f",
+                                    digits = 0,
+                                    big.mark = ".",
+                                    decimal.mark = ","), " (",
+      formatC(d_/b*100,
+        format = "f",
+        digits = 1,
+        big.mark = ".",
+        decimal.mark = ","), "%)\n\n", sep = "")
+  cat("Diferença de linhas na deduplicação: ", formatC(a-b,
+                                    format = "f",
+                                    digits = 0,
+                                    big.mark = ".",
+                                    decimal.mark = ","), " (",
+      formatC((a-b)/a*100,
+        format = "f",
+        digits = 1,
+        big.mark = ".",
+        decimal.mark = ","), "%)\n", sep = "")
+  cat("Diferença de positivos na deduplicação: ", formatC(c_-d_,
+                                    format = "f",
+                                    digits = 0,
+                                    big.mark = ".",
+                                    decimal.mark = ","), " (",
+      formatC((c_-d_)/c_*100,
+        format = "f",
+        digits = 1,
+        big.mark = ".",
+        decimal.mark = ","), "%)\n\n", sep = "")
+  
+  nomes_ = tibble(nomes = sort(get(obj_name)[["paciente_nome"]]))
+  
+  chaves_ = tibble(chaves = sort(get(obj_name)[["chave"]]))
+  
+  cat("Nomes únicos: ", formatC(n_distinct(nomes_$nomes),
+                                    format = "f",
+                                    digits = 0,
+                                    big.mark = ".",
+                                    decimal.mark = ","), "\n", sep = "")
+  
+  cat("Nomes repetidos: ", formatC(b - n_distinct(nomes_$nomes),
+                                    format = "f",
+                                    digits = 0,
+                                    big.mark = ".",
+                                    decimal.mark = ","), " (",
+      formatC((b - n_distinct(nomes_$nomes))/b*100,
+        format = "f",
+        digits = 1,
+        big.mark = ".",
+        decimal.mark = ","), "%)\n\n", sep = "")
+   
+  cat("Chaves únicas: ", formatC(n_distinct(chaves_$chaves),
+                                    format = "f",
+                                    digits = 0,
+                                    big.mark = ".",
+                                    decimal.mark = ","), "\n", sep = "")
+  
+  cat("Chaves repetidas: ", formatC(b - n_distinct(chaves_$chaves),
+                                    format = "f",
+                                    digits = 0,
+                                    big.mark = ".",
+                                    decimal.mark = ","), " (",
+      formatC((length(chaves_$chaves) - n_distinct(chaves_$chaves))/
+                length(chaves_$chaves)*100,
+        format = "f",
+        digits = 1,
+        big.mark = ".",
+        decimal.mark = ","), "%)\n\n", sep = "")
+  
+  
+  cat("Vírus selecionados: ", unique(get(obj_name)[[paste0(v, "_virus")]]), "\n\n\n")
+  
+  teste_nomes = tibble(nomes = sort(head(get(obj_name)[["paciente_nome"]], 60)))
+  print(teste_nomes, n=60)
+  
+}
+
+view(gal_link_sars_cov_2)
+
+
+gal_link_dedup_virus <- list(
+  "flu_a_h1n1_pdm09" = gal_link_flu_a_h1n1_pdm09,
+  "flu_a_h3_sazo"    = gal_link_flu_a_h3_sazo,
+  "flu_a_h5n1"       = gal_link_flu_a_h5n1,
+  "flu_a_h7n9"       = gal_link_flu_a_h7n9,
+  "flu_a_ne"         = gal_link_flu_a_ne,
+  "flu_b_ne"         = gal_link_flu_b_ne,
+  "sars_cov_2"       = gal_link_sars_cov_2,
+  "hcov_229e"        = gal_link_hcov_229e,
+  "hcov_hku1"        = gal_link_hcov_hku1,
+  "hcov_nl63"        = gal_link_hcov_nl63,
+  "hcov_oc43"        = gal_link_hcov_oc43,
+  "vsr_a"            = gal_link_vsr_a,
+  "vsr_b"            = gal_link_vsr_b,
+  "vsr_ne"           = gal_link_vsr_ne,
+  "adeno"            = gal_link_adeno,
+  "mpv_a"            = gal_link_mpv_a,
+  "mpv_b"            = gal_link_mpv_b,
+  "mpv_ne"           = gal_link_mpv_ne,
+  "rino_ab"          = gal_link_rino_ab,
+  "rino_ne"          = gal_link_rino_ne,
+  "paraflu_1"        = gal_link_paraflu_1,
+  "paraflu_2"        = gal_link_paraflu_2,
+  "paraflu_3"        = gal_link_paraflu_3,
+  "paraflu_4"        = gal_link_paraflu_4,
+  "boca"             = gal_link_boca,
+  "entero"           = gal_link_entero,
+  "parecho"          = gal_link_parecho
+)
+
+
+saveRDS(gal_link_dedup_virus, file = paste0(pasta_interm, "gal_dedup_df.rds"))
+
+rm(list = c(
+  "gal_link_dedup_virus",
+  "gal_link_flu_a_h1n1_pdm09",
+  "gal_link_flu_a_h3_sazo",
+  "gal_link_flu_a_h5n1",
+  "gal_link_flu_a_h7n9",
+  "gal_link_flu_a_ne",
+  "gal_link_flu_b_ne",
+  "gal_link_sars_cov_2",
+  "gal_link_hcov_229e",
+  "gal_link_hcov_hku1",
+  "gal_link_hcov_nl63",
+  "gal_link_hcov_oc43",
+  "gal_link_vsr_a",
+  "gal_link_vsr_b",
+  "gal_link_vsr_ne",
+  "gal_link_adeno",
+  "gal_link_mpv_a",
+  "gal_link_mpv_b",
+  "gal_link_mpv_ne",
+  "gal_link_rino_ab",
+  "gal_link_rino_ne",
+  "gal_link_paraflu_1",
+  "gal_link_paraflu_2",
+  "gal_link_paraflu_3",
+  "gal_link_paraflu_4",
+  "gal_link_boca",
+  "gal_link_entero",
+  "gal_link_parecho"
+))
+
+```
+
+#### Juntando informações do paciente
+
+```{r, gal_chave_info_pac}
+nrow(gal_link_2)
+
+gal_link_2 = gal_link_2|>
+  left_join(gal_link|>
+              distinct(chave, .keep_all = T)|>
+              select(paciente_municipio_ibge:chave), by = "chave")|>
+  select(-c(exame,metodo,no_agravo,no_agravo_req,
+            resultado,virus,subtipagem,linhagem,gene,
+            data_coleta, data_processamento,data_recebimento,
+            paciente_data_nascimento))
+
+nrow(gal_link_2)
+glimpse(gal_link_2)
+table(gal_link_2$`virus`)
+view(gal_link_2)
+
+```
+
+### Juntando as informações com pelo arquivo da chave - Loop para fazer os joins
+
+```{r, join_dedup_loop_comb_virus}
+
+list_gal_dedup_virus = readRDS(paste0(pasta_interm, "gal_dedup_df.rds"))
+
+
+for (v in virus_list) {
+  obj_name <- v
+  
+  if (!is.null(list_gal_dedup_virus[[obj_name]])) {
+    gal_link_2 <- gal_link_2 |>
+      left_join(
+        list_gal_dedup_virus[[obj_name]] |>
+          select(-c(paciente_nome,
+                    contains("no_agravo"),
+                    contains("_exame"))),
+        by = "chave"
+      )
+    
+    cat("\n✅ Join realizado para:", obj_name, "\n")
+    cat("Linhas após join:", nrow(gal_link_2), "\n")
+    glimpse(gal_link_2)
+  } else {
+    cat("\n⚠️ Objeto não encontrado na lista:", obj_name, "\n")
+  }
+}
+
+```
+
+#### Finalizando tratamento
+
+```{r, finished_gal_trat_dedup}
+
+gal_link_2 = gal_link_2 |>
+  mutate(across(
+    .cols = ends_with("_resultado"),
+    .fns = ~ factor(
+      case_when(
+        . %in% c("Positivo", "Detectavel", "Positivo / Detectavel") ~ "Sim",
+        . %in% c("Negativo", "Nao Detectavel", "Negativo / Nao Detectavel") ~ "Não",
+        . %in% c("Inconclusivo", "Inconclusivo / Indeterminado") ~ "Inc",
+        .default = .),
+      levels = c("Sim", "Não", "Inc")
+    )
+  ))
+
+glimpse(gal_link_2)
+
+resultados_gal = gal_link_2|>
+          select(ends_with("_resultado"))
+
+summary(resultados_gal)
+```
+
+#### Salvando o banco
+
+```{r, save_gal_dedup}
+
+write_parquet(gal_link_2, paste0(pasta_interm,"gal_link_dedup.parquet"))
+
+rm(list = ls(pattern = "^gal_"))
+rm(list_gal_dedup_virus)
+rm(resultados_gal)
+gc()
+
+```
+
+## Deduplicando SG e Srag
+
+Para os registros do Sivep, foi utilizada a chave: “nome do paciente”, “nome da mãe do paciente”, “data de nascimento”, “sexo” e “UF de residência”. Logo após, foram agrupados todos os registros com a mesma chave e calculadas as diferenças entre as datas do início dos sintomas dos registros agrupados. Os registros do grupo obtiverem uma diferença ("lag") menor ou igual a 30 dias e possuírem a data do início dos sintomas posterior (maior ou mais recente comparando com a data de hoje) foram excluídos.
+
+### Sg
+
+#### Relendo o banco
+
+```{r, read_sg}
+sg_sivep = list.files(path = pasta_interm,
+                      pattern = "dados_sg_sivep",
+                      full.names = T)|>
+  lapply(read_parquet)|>
+  bind_rows()
+
+```
+
+#### Criando chave e deduplicando
+
+```{r, dedup_sg}
+glimpse(sg_sivep)
+
+table(format(sg_sivep$dt_coleta, format = "%Y"), useNA = "always")
+
+
+
+
+sg_sivep_dedup = sg_sivep |>
+  rename("paciente_sexo" = "SEXO") |>
+  mutate(dt_pri_sin = as.Date(dt_pri_sin),
+         dt_nasc = as.Date(dt_nasc)) |>
+  group_by(paciente_nome, paciente_nome_mae, uf_res, paciente_sexo, dt_nasc) |>
+  arrange(dt_pri_sin) 
+
+select_sg = sg_sivep_dedup|>
+  select(paciente_nome, paciente_nome_mae, uf_res, paciente_sexo, dt_nasc, dt_pri_sin)|>
+  arrange(paciente_nome)|>
+  filter(paciente_nome !="")|>
+  head(n=1200)
+
+print(select_sg, n= 1200)
+
+
+
+
+sg_sivep_dedup = sg_sivep_dedup |>
+  mutate(diff_dias = as.numeric(dt_pri_sin - lag(dt_pri_sin)),
+         duplicado_30d = if_else(!is.na(diff_dias) & diff_dias <= 30, TRUE, FALSE)) |>
+  # Filtrar mantendo o primeiro e qualquer outro com diferença > 30 dias
+  filter(is.na(diff_dias) | diff_dias > 30) |>
+  ungroup()
+
+select_sg = sg_sivep_dedup|>
+  select(paciente_nome, paciente_nome_mae, uf_res, paciente_sexo, dt_nasc, dt_pri_sin)|>
+  arrange(paciente_nome)|>
+  filter(paciente_nome != "")|>
+  head(n=1200)
+
+print(select_sg, n= 1200)
+
+
+
+cat("N geral: ",
+    formatC(
+      nrow(sg_sivep),
+      format = "f",
+      big.mark = ".",
+      decimal.mark = ",",
+      digits = 0), 
+    "\nN deduplicado: ",
+    formatC(nrow(sg_sivep_dedup),
+      format = "f",
+      big.mark = ".",
+      decimal.mark = ",",
+      digits = 0), " (Dif: ", 
+    formatC(nrow(sg_sivep) - nrow(sg_sivep_dedup),
+      format = "f",
+      big.mark = ".",
+      decimal.mark = ",",
+      digits = 0), " - ",
+    formatC((nrow(sg_sivep) - nrow(sg_sivep_dedup))*100/nrow(sg_sivep),
+      format = "f",
+      big.mark = ".",
+      decimal.mark = ",",
+      digits = 1), "%)\n\n",
+    sep = ""
+    )
+
+write_csv2(sg_sivep_dedup, paste0(pasta_interm,"sg_sivep_dedup.csv"))
+
+sg_sivep_dedup = read_csv2(paste0(pasta_interm,"sg_sivep_dedup.csv"))
+
+sg_sivep_dedup = sg_sivep_dedup|>
+  filter(PCR_RESUL %in% c("1","2","3","5","9"))
+
+nrow(sg_sivep_dedup)
+
+write_csv2(sg_sivep_dedup, paste0(pasta_interm,"sg_sivep_dedup_filter_pcr_resul.csv"))
+
+rm(list = c("sg_sivep","sg_sivep_dedup"))
+
+```
+
+### Srag
+
+#### Relendo o banco
+
+```{r, read_srag}
+srag_sivep = read_parquet(paste0(pasta_interm,"dados_srag_sivep_pad.parquet"))
+```
+
+#### Criando chave e deduplicando
+
+```{r, dedup_srag}
+glimpse(srag_sivep)
+
+table(format(srag_sivep$dt_pri_sin, format = "%Y"), useNA = "always")
+
+
+
+srag_sivep_dedup <- srag_sivep |>
+  rename("paciente_sexo" = "CS_SEXO") |>
+  mutate(dt_pri_sin = as.Date(dt_pri_sin),
+         dt_nasc = as.Date(dt_nasc)) |>
+  group_by(paciente_nome, paciente_nome_mae, uf_res, paciente_sexo, dt_nasc) |>
+  arrange(dt_pri_sin) 
+
+select_srag = srag_sivep_dedup|>
+  select(paciente_nome, paciente_nome_mae, uf_res, paciente_sexo, dt_nasc, dt_pri_sin)|>
+  arrange(paciente_nome)|>
+  filter(paciente_nome !="")|>
+  head(n=400)
+
+print(select_srag, n= 300)
+
+
+
+srag_sivep_dedup = srag_sivep_dedup|>
+  mutate(diff_dias = as.numeric(dt_pri_sin - lag(dt_pri_sin)),
+         duplicado_30d = if_else(!is.na(diff_dias) & diff_dias <= 30, TRUE, FALSE)) |>
+  # Filtrar mantendo o primeiro e qualquer outro com diferença > 30 dias
+  filter(is.na(diff_dias) | diff_dias > 30) |>
+  ungroup()
+
+select_srag = srag_sivep_dedup|>
+  select(paciente_nome, paciente_nome_mae, uf_res, paciente_sexo, dt_nasc, dt_pri_sin)|>
+  arrange(paciente_nome)|>
+  filter(paciente_nome !="")|>
+  head(n=400)
+
+print(select_srag, n= 300)
+
+
+
+cat("N geral: ",
+    formatC(
+      nrow(srag_sivep),
+      format = "f",
+      big.mark = ".",
+      decimal.mark = ",",
+      digits = 0), 
+    "\nN deduplicado: ",
+    formatC(nrow(srag_sivep_dedup),
+      format = "f",
+      big.mark = ".",
+      decimal.mark = ",",
+      digits = 0), " (Dif: ", 
+    formatC(nrow(srag_sivep) - nrow(srag_sivep_dedup),
+      format = "f",
+      big.mark = ".",
+      decimal.mark = ",",
+      digits = 0), " - ",
+    formatC((nrow(srag_sivep) - nrow(srag_sivep_dedup))*100/nrow(srag_sivep),
+      format = "f",
+      big.mark = ".",
+      decimal.mark = ",",
+      digits = 1), "%)",
+    sep = "")
+
+
+glimpse(srag_sivep_dedup)
+
+
+
+write_parquet(srag_sivep_dedup, paste0(pasta_interm,"srag_sivep_dedup.parquet"))
+
+srag_sivep_dedup = read_parquet(paste0(pasta_interm,"srag_sivep_dedup.parquet"))
+
+srag_sivep_dedup|>
+  count(PCR_RESUL)|>
+  mutate(perc = round(n/sum(n)*100,1))
+
+srag_sivep_dedup = srag_sivep_dedup|>
+  filter(PCR_RESUL %in% c("1","2","3","5","9"))
+
+nrow(srag_sivep_dedup)
+
+write_parquet(srag_sivep_dedup, paste0(pasta_interm,"srag_sivep_dedup_filter_pcr_resul.parquet"))
+
+rm(list = c("srag_sivep","srag_sivep_dedup"))
+
+```
+
+## Link gal + srag
+
+Os dados foram relacionados de forma probabilística, utilizando as variáveis da formação da chave ( “nome do paciente”; “nome da mãe do paciente”; “data de nascimento”; “sexo”, “UF de residência”). A blocagem do pareamento foi realizada utilizando os seguintes arranjos de variáveis utilizadas , conforme recomendação do IPEA para relacionamento de grandes bases de dados \[ref\], visando aumentar a granularidade de pares. Segundo o IPEA, fazer a blocagem com pareamento 2x2 é mais eficiente do que 3x3 (o que pode gerar “gessamento” da blocagem) ou individual (o que causa explosão de pares) \[ref\], porém, por sugestão da área técnica, foi feito pareamento por três variáveis (sexo & ano de nasc. & UF de residência) pela experiência da equipe com relacionamento de grandes bancos.
+
+Em passo anterior ao relacionamento, foram avaliados os conjuntos de variáveis para blocagem que formavam um arquivo de pares blocadas com menos de 1 bilhão de pares, visando manter a análise dentro da capacidade informacional disponível, e não gerar pares redundantes, como por exemplo no caso existir um conjunto de pares blocado pela data de nascimento (mais restritivo) e outro pelo ano de nascimento (mais abrangente), escolhendo sempre o mais abrangente, dentro da capacidade informacional (conjunto final com menos de 1bi de pares). O ponto de corte para a similaridade de Hamming para datas foi de 7/8 pontos (utilizando a distância de Hamming, o que leva uma similaridade percentual de 87,5%), e para a similaridade de Jaro-Winkler, 85%, segundo seu algoritmo.
+
+Os registros foram filtrados pela diferença entre data do início dos sintomas e data de coleta, dentro do intervalo entre 0 e 30 dias a partir do início dos sintomas, sendo estes considerados os pares a serem considerados. Os pares foram classificados em "pares perfeitos" (com similaridade de todas as variáveis igual a 100%), "pares prováveis" (com similiaridade acima de 85% para cada variável nominal e categórica, e 87,5% na data de nascimento) e "pares não relacionados" quando atingiram pontuação diferente das anteriores.
+
+Foi feita revisão manual dos pares com todos os ítens da chave diferentes deterministicamente entre eles, visando uma avaliação dos "piores" produtos do relacionamento quanto a similaridade. Logo após, os registros relacionados foram unidos aos não relacionados, sendo estes últimos selecionados a partir de um anti-junção determinística ("anti-join") dos IDs dos bancos do Sivep presentes nos bancos gerais (SG e Srag). Os registros dos bancos do Sivep que obtiveram várias junções com o GAL (registros com diferentes datas de coleta) foram contabilizados como apenas um para estatísticas do relacionamento, sendo unificados pelo ID gerado na preparação dos dados, que corresponderá a uma única chave de deduplicação.
+
+### Lendo o gal e srag
+
+```{r, lendo_dedups_prob}
+gal_dedup = read_parquet(paste0(pasta_interm,"gal_link_dedup.parquet"))
+
+srag_dedup = read_parquet(paste0(pasta_interm,"srag_sivep_dedup_filter_pcr_resul.parquet"))
+```
+
+### Probabilistico - jw para nomes e hamming para data
+
+#### gerando chave - se necessário
+
+```{r, pre_trat_prob}
+
+# glimpse(srag_dedup)
+# 
+# glimpse(gal_dedup)
+
+
+srag_dedup = srag_dedup|>
+  mutate(paciente_nome_ = str_replace_all(paciente_nome, "\\s+", ""),
+         paciente_nome_mae_ = str_replace_all(paciente_nome_mae, "\\s+", "")) 
+
+srag_prob = srag_dedup |>
+  rename("cod_mun_res" = CO_MUN_RES)|>
+  select(
+    id_srag_sivep,
+    paciente_nome_,
+    pnome_pac,
+    paciente_nome_mae_,
+    pnome_mae,
+    paciente_sexo,
+    dt_nasc,
+    ano_nasc,
+    cod_mun_res,
+    uf_res,
+    dt_pri_sin)|>
+  rename("id_" = "id_srag_sivep")
+
+x_ = nrow(srag_prob)
+
+glimpse(srag_prob)
+
+gal_dedup = gal_dedup|>
+  mutate(paciente_nome_ = str_replace_all(paciente_nome, "\\s+", ""),
+         paciente_nome_mae_ = str_replace_all(paciente_nome_mae, "\\s+", ""))
+
+gal_prob = gal_dedup|>
+  mutate("cod_mun_res" = substr(paciente_municipio_ibge,1,6))|>
+  select(
+    id_gal,
+    paciente_nome_,
+    pnome_pac,
+    paciente_nome_mae_,
+    pnome_mae,
+    paciente_sexo,
+    dt_nasc,
+    ano_nasc,
+    cod_mun_res,
+    uf_res,
+    dt_coleta)|>
+  rename("id_" = "id_gal")
+
+y_ = nrow(gal_prob)
+
+glimpse(gal_prob)
+
+```
+
+#### projetando quais seriam os melhores pares sem explodir
+
+```{r, test_pares}
+
+# Vetor de variáveis
+vars <- c("paciente_nome_",
+          "pnome_pac",
+          "paciente_nome_mae_",
+          "pnome_mae",
+          "paciente_sexo",
+          "dt_nasc",
+          "ano_nasc",
+          "cod_mun_res",
+          "uf_res")
+
+# Todas as combinações de 3 variáveis
+combs <- combn(vars, 2, simplify = FALSE)
+
+# Lista para armazenar pares e log
+lista_pares <- list()
+log_resultados <- data.frame(
+  combinacao = character(),
+  status = character(),
+  n_pares = numeric(),
+  stringsAsFactors = FALSE
+)
+
+# Loop com tryCatch para capturar erros
+safe_blocking <- safely(function(x, y, on) {
+  pair_blocking(x, y, on = on)
+}, otherwise = NULL)
+
+lista_pares <- vector("list", length(combs))
+lista_erros <- vector("list", length(combs))
+
+for (i in seq_along(combs)) {
+  comb_atual <- combs[[i]]
+  cat("Processando combinação", i, ":", paste(comb_atual, collapse = ", "), "\n")
+
+  res <- safe_blocking(srag_prob, gal_prob, on = comb_atual)
+
+  # Salva resultado (ou NULL)
+  lista_pares[[i]] <- res$result
+
+  # Salva erro (ou NULL)
+  lista_erros[[i]] <- res$error
+
+  if (is.null(res$error)) {
+    n_pares <- nrow(res$result)
+    status <- "Sucesso"
+  } else {
+    n_pares <- NA_integer_
+    status <- paste("Falhou:", conditionMessage(res$error))
+  }
+
+  log_resultados <- rbind(
+    log_resultados,
+    data.frame(
+      combinacao = paste(comb_atual, collapse = ", "),
+      status = status,
+      n_pares = n_pares
+    )
+  )
+
+  gc()
+}
+
+
+# Exibe resumo
+pares_teste = as.data.frame(log_resultados)|>
+  arrange(n_pares)
+
+view(pares_teste)
+
+rm(list = c("pares", "lista_pares"))
+
+```
+
+#### fazendo o link
+
+```{r, pareando_calc_dist_prob}
+
+### salvando os pares por blocos
+
+# Lista de combinações
+comb_list <- list(
+  c("cod_mun_res", "paciente_sexo", "ano_nasc"), #add a pedido
+  c("paciente_nome_", "ano_nasc"), #nova ok
+  c("paciente_nome_","pnome_mae"), #nova ok
+  c("paciente_nome_","uf_res"), #nova ok 
+  c("paciente_nome_mae_","ano_nasc"), #nova ok
+  c("pnome_pac","paciente_nome_mae_"), #nova ok
+  c("pnome_pac","dt_nasc"), #nova ok
+  c("paciente_nome_mae_", "uf_res"), #nova ok
+  c("pnome_mae","dt_nasc"), #nova ok
+  c("paciente_sexo", "dt_nasc"), #nova ok 
+  c("uf_res", "dt_nasc"), #nova ok
+  c("pnome_pac","cod_mun_res") #nova ok
+)
+
+# Lista para armazenar os resultados
+pares_estado <- list()
+
+inicio_pareamento = Sys.time()
+
+# Loop para gerar os pares e contar as linhas
+for (i in seq_along(comb_list)) {
+  pares_estado[[i]] <- pair_blocking(srag_prob, gal_prob, on = comb_list[[i]])
+  cat("pares_estado_", 
+      i, 
+      " (", 
+      paste(comb_list[[i]], collapse = ", "),
+      "): ", 
+      formatC(nrow(pares_estado[[i]]),
+              format = "f",
+              big.mark = ".",
+              decimal.mark = ",",
+              digits = 0), 
+      "\n", sep = "")
+  gc() # limpeza de memória
+}
+
+### unindo pares únicos
+pares_estado = do.call(rbind, pares_estado)
+
+n_pares_total = nrow(pares_estado)
+
+print(pares_estado)
+
+formatC(n_pares_total,
+        format = "f",
+        big.mark = ".",
+        decimal.mark = ",",
+        digits = 0)
+
+### calculando jw para nomes e hamming para data de nascimento
+pares_estado = pares_estado|>
+  compare_pairs(
+    on = c(    
+      "dt_nasc",
+      "paciente_nome_",
+      "paciente_sexo",
+      "paciente_nome_mae_"),
+    comparators = list(cmp_hamming_date(threshold = 0.85),
+                       cmp_jarowinkler(threshold = 0.85),
+                       cmp_jarowinkler(threshold = 0.85),
+                       cmp_jarowinkler(threshold = 0.85)))
+
+gc()
+
+final_calculo_dist = Sys.time()
+
+final_calculo_dist - inicio_pareamento
+
+save(pares_estado, file = paste0(pasta_interm,"pares_calc_sprob_srag.RData"))
+
+# rm(pares_estado)
+```
+
+#### Estabelecendo ponto de corte e salvando pares total e verdadeiros
+
+```{r, calc_score_verd}
+load(paste0(pasta_interm,"pares_calc_sprob_srag.RData"))
+
+m1 = problink_em(~ paciente_nome_ + paciente_nome_mae_ + dt_nasc + paciente_sexo, data = pares_estado)
+
+print(m1)
+
+### escore
+pares_estado = score_simple(pares_estado, 
+                            variable = "score",
+                            on = c(    
+                              "paciente_nome_",
+                              "dt_nasc",
+                              "paciente_sexo",
+                              "paciente_nome_mae_"))
+
+
+### sinalizando registros selecionados como verdadeiros a partir do corte de 0.8 
+pares_estado = select_threshold(pares_estado, 
+                                variable = "paciente_nome_s",
+                                score = "paciente_nome_",
+                                threshold = 0.85,
+                                inplace = T)
+
+pares_estado = select_threshold(pares_estado, 
+                                variable = "paciente_nome_mae_s",
+                                score = "paciente_nome_mae_",
+                                threshold = 0.85,
+                                inplace = T)
+
+pares_estado = select_threshold(pares_estado, 
+                                variable = "paciente_sexo_s",
+                                score = "paciente_sexo",
+                                threshold = 1,
+                                inplace = T)
+
+pares_estado = select_threshold(pares_estado, 
+                                variable = "dt_nasc_s",
+                                score = "dt_nasc",
+                                threshold = 0.85,
+                                inplace = T)
+
+
+## media das pontuações para estatística
+med_d_pac_nome = mean(pares_estado$paciente_nome_)
+med_d_pac_nome_mae = mean(replace(pares_estado$paciente_nome_mae_, -Inf, 0), na.rm = T)
+med_d_pac_sexo = mean(pares_estado$paciente_sexo)
+med_d_dt_nasc = mean(replace(pares_estado$dt_nasc, -Inf, 0), na.rm = T)
+
+print(pares_estado)
+### filtra pares verdadeiros
+pares_verd_estado = pares_estado[paciente_nome_s == T &
+                                   paciente_nome_mae_s == T &
+                                   dt_nasc_s == T &
+                                   paciente_sexo_s == T]
+gc()
+
+## media das pontuações para estatística
+med_d_pac_nome_verd = mean(pares_verd_estado$paciente_nome_)
+med_d_pac_nome_mae_verd = mean(pares_verd_estado$paciente_nome_mae_)
+med_d_pac_sexo_verd = mean(pares_verd_estado$paciente_sexo)
+med_d_dt_nasc_verd = mean(pares_verd_estado$dt_nasc)
+
+n_pares_verd = nrow(pares_verd_estado)
+
+# Salvando os arquivos de pares arquivos .RData
+save(pares_estado, file = paste0(pasta_interm,"pares_estado_srag.RData"))
+
+save(pares_verd_estado, file = paste0(pasta_interm,"pares_verd_estado_srag.RData"))
+
+rm(list = c("pares_estado"))
+
+gc()
+
+m2 = problink_em(~ paciente_nome_ + paciente_nome_mae_ + dt_nasc + paciente_sexo, data = pares_verd_estado)
+
+print(m2)
+```
+
+#### Gerando banco de pares verdadeiros com todas as variáveis originais
+
+```{r, cbind_verd_bd_originais}
+
+# load(paste0(pasta_interm,"pares_estado.RData"))
+
+### selecionando o banco completo por pares
+pares_estado_srag = srag_dedup[pares_verd_estado$.x,]
+
+pares_estado_gal = gal_dedup[pares_verd_estado$.y,]
+
+### separando colunas de score
+
+score_dt_nasc = tibble(score_dt_nasc = pares_verd_estado$dt_nasc)
+score_sexo = tibble(score_sexo = pares_verd_estado$paciente_sexo)
+score_pac_nome = tibble(score_pac_nome = pares_verd_estado$paciente_nome_)
+score_nome_mae = tibble(score_nome_mae = pares_verd_estado$paciente_nome_mae_)
+
+score_final = tibble(score_final = pares_verd_estado$paciente_nome_+
+  pares_verd_estado$paciente_nome_mae_+
+  pares_verd_estado$dt_nasc+
+  pares_verd_estado$paciente_sexo)
+
+
+## renomeando variaveis do banco para evitar conflitos de nome
+colnames(pares_estado_srag) = paste0(colnames(pares_estado_srag), ".srag")
+
+colnames(pares_estado_gal) = paste0(colnames(pares_estado_gal), ".gal")
+
+
+### juntando srag e gal completo dos pares verdadeiros
+srag_gal_prob = bind_cols(pares_estado_srag,
+                          pares_estado_gal,
+                          score_dt_nasc,
+                          score_sexo,
+                          score_pac_nome,
+                          score_nome_mae,
+                          score_final)
+
+rm(list = c("pares_estado_srag","pares_estado_gal"))
+
+nrow(srag_gal_prob|>distinct(id_gal.gal))
+
+gc()
+glimpse(srag_gal_prob)
+
+### 
+
+
+
+nrow(srag_gal_prob)
+
+nrow(srag_gal_prob|>distinct(id_gal.gal))
+
+nrow(srag_gal_prob|>distinct(id_srag_sivep.srag))
+
+
+```
+
+#### Filtrando pela diferença entre dt_pri_sin e dt_coleta aceitavel
+
+```{r, filt_dt_diff_pri_sin_coleta}
+### criando diferença entre dias do inicio dos sintomas e coleta
+srag_gal_prob = srag_gal_prob|>
+  mutate(dif_link = as.numeric(dt_coleta.gal - dt_pri_sin.srag))
+
+
+### contabizando linhas de acordo com os próximos filtros
+a = nrow(srag_gal_prob)
+b = nrow(srag_gal_prob|>
+           filter(!is.na(uf_res.gal)))
+negativos <- round(nrow(srag_gal_prob |> filter(dif_link < 0)),1)
+acima <- round(nrow(srag_gal_prob |> filter(dif_link > 30)),1)
+
+
+### estatísticas da diferença entre dias do inicio dos sintomas e coleta
+media = round(mean(srag_gal_prob$dif_link, na.rm = T),1)
+max = round(max(srag_gal_prob$dif_link, na.rm = T),1)
+min = round(min(srag_gal_prob$dif_link, na.rm = T),1)
+med = round(quantile(srag_gal_prob$dif_link, 0.50, na.rm = T),1)
+q1 <- round(quantile(srag_gal_prob$dif_link, 0.25, na.rm = T),1)
+q3 <- round(quantile(srag_gal_prob$dif_link, 0.75, na.rm = T),1)
+
+
+## filtrando pelas datas provaveis de coincidencia entre inicio dos sintomas e coleta
+srag_gal_prob_ = srag_gal_prob|>
+  filter(dif_link >= 0 & dif_link <= 30 &
+           !is.na(uf_res.gal))
+
+# view(srag_gal_prob_)
+
+nrow(srag_gal_prob_|>distinct(chave.gal))
+
+### contabizando linhas de acordo com os próximos filtros
+c = nrow(srag_gal_prob_)
+
+### estatísticas da diferença entre dias do inicio dos sintomas e coleta
+media_2 = round(mean(srag_gal_prob_$dif_link, na.rm = T),1)
+max_2 = round(max(srag_gal_prob_$dif_link, na.rm = T),1)
+min_2 = round(min(srag_gal_prob_$dif_link, na.rm = T),1)
+med_2 = round(quantile(srag_gal_prob_$dif_link, 0.50, na.rm = T),1)
+q1_2 <- round(quantile(srag_gal_prob_$dif_link, 0.25, na.rm = T),1)
+q3_2 <- round(quantile(srag_gal_prob_$dif_link, 0.75, na.rm = T),1)
+
+rm(list = c("srag_gal_prob"))
+
+nrow(srag_gal_prob_)
+
+nrow(srag_gal_prob_|>distinct(id_gal.gal))
+
+nrow(srag_gal_prob_|>distinct(id_srag_sivep.srag))
+```
+
+#### Estatístisticas do relacionamento
+
+```{r, estat_prob}
+
+
+cat(
+  "N geral de registros de Srag para prob: ",
+  formatC(x_, format = "f", big.mark =".", decimal.mark = ",", digits = 0),
+  "\nN geral de registros do Gal para prob: ",
+  formatC(y_, format = "f", big.mark =".", decimal.mark = ",", digits = 0),
+  "\n\nN pares gerados pela blocagem: ",
+  n_pares_total,
+  "\nMédia do score:",
+  "\n - Data de nascimento: ",formatC(med_d_dt_nasc, format = "f", big.mark =".", decimal.mark = ",", digits = 2),
+  "\n - Sexo: ",formatC(med_d_pac_sexo, format = "f", big.mark =".", decimal.mark = ",", digits = 2),
+  "\n - Nome do paciente: ",formatC(med_d_pac_sexo, format = "f", big.mark =".", decimal.mark = ",", digits = 2),
+  "\n - Nome da mãe: ",formatC(med_d_pac_sexo, format = "f", big.mark =".", decimal.mark = ",", digits = 2),
+  "\n\nN pares considerados verdadeiros: ",
+  n_pares_verd, "(",
+  formatC((n_pares_verd - x_) / x_ * 100, 
+          format = "f", 
+          digits = 1, 
+          big.mark =".", 
+          decimal.mark = ","), 
+  " % do total de registros inicial)",
+  "\nMédia do score:",
+  "\n - Data de nascimento: ",formatC(med_d_dt_nasc_verd, format = "f", big.mark =".", decimal.mark = ",", digits = 2),
+  "\n - Sexo: ",formatC(med_d_pac_sexo_verd, format = "f", big.mark =".", decimal.mark = ",", digits = 2),
+  "\n - Nome do paciente: ",formatC(med_d_pac_sexo_verd, format = "f", big.mark =".", decimal.mark = ",", digits = 2),
+  "\n - Nome da mãe: ",formatC(med_d_pac_sexo_verd, format = "f", big.mark =".", decimal.mark = ",", digits = 2),
+  "\n\n\n# Após link sem filtro de data: ",
+  "\nLinhas do banco de srag relacionado após junção dos bancos originais: ",
+  a,
+  " (+",
+  formatC((a - x_) / x_ * 100, format = "f", digits = 1),
+  "%)\nLinhas do GAL relacionadas pelo probabilistico: ",
+  b,
+  " (",
+  formatC(b / y_ * 100, format = "f", digits = 1),
+  "% do Gal separado e ",
+  formatC(b / x_ * 100, format = "f", digits = 1) ,
+  "% do Srag inicial para probabilistico)",
+  "\nDif_link negativo: ", negativos,
+  "\nDif_link > 30 dias: ", acima, 
+  "\nMédia (min - max): ", media, " (", min, " - ", max,")", 
+  "\nMediana (Q1-Q3): ", med, " (", q1, " - ", q3,")",
+  "\n\n\n# Após filtragem da diferença entre a data de início dos sintomas e coleta: ",
+  "\nLinhas após join: ",
+  c,
+  " (",
+  formatC(c / y_ * 100, format = "f", digits = 1),
+  "% do Gal encontrado e ",
+  formatC(c / x_ * 100, format = "f", digits = 1) ,
+  "% do Srag encontrado)",
+  "\nMédia (min - max): ", media_2, " (", min_2, " - ", max_2,")", 
+  "\nMediana (Q1-Q3): ", med_2, " (", q1_2, " - ", q3_2,")",
+  "\n\n\n",
+  sep = ""
+)
+
+
+
+##salvando  dados do probabilistico final
+write_parquet(srag_gal_prob_, paste0(pasta_interm,"srag_gal_prob.parquet"))
+
+glimpse(srag_gal_prob_)
+
+gc()
+```
+
+### Revisando manualmente (amostra dos "piores" pares)
+
+```{r, rev_manual}
+
+### lendo o banco 
+srag_gal_prob_ = read_parquet(paste0(pasta_interm,"srag_gal_prob.parquet"))
+
+### reformando a chave
+srag_gal_prob_ = srag_gal_prob_|>
+    mutate(chave = paste0(
+      paciente_nome.srag,
+      paciente_nome_mae.srag,
+      uf_res.srag,
+      paciente_sexo.srag,
+      dt_nasc.srag,
+      dt_pri_sin.srag),
+      chave = str_replace_all(chave,"\\s+", ""))
+
+### Estatisticas
+length(unique(srag_gal_prob_$chave))
+nrow(srag_gal_prob_)
+ncol(srag_gal_prob_)
+glimpse(srag_gal_prob_)
+
+
+### banco para revisão manual
+srag_gal_comp = srag_gal_prob_|>
+  select(
+    paciente_nome.srag,
+    paciente_nome.gal,
+    paciente_nome_mae.srag,
+    paciente_nome_mae.gal,
+    paciente_sexo.srag,
+    paciente_sexo.gal,
+    dt_nasc.srag,
+    dt_nasc.gal,
+    dt_pri_sin.srag,
+    dt_coleta.gal,
+    dif_link,
+    uf_res.srag,
+    uf_res.gal,
+    score_final
+  )|>
+  mutate(
+    nome_igual = case_when(
+      paciente_nome.srag == paciente_nome.gal ~ T,
+      .default = F
+    ),
+    nome_mae_igual = case_when(
+      paciente_nome_mae.srag == paciente_nome_mae.gal ~ T,
+      .default = F
+    ),
+    dt_nasc_igual = case_when(
+      dt_nasc.srag == dt_nasc.gal ~ T,
+      .default = F
+    ),
+    sexo_igual = case_when(
+      paciente_sexo.srag == paciente_sexo.gal ~ T,
+      .default = F
+    )
+  )|>
+  filter(nome_igual == F & nome_mae_igual == F & dt_nasc_igual == F)
+
+view(srag_gal_comp)
+
+write_csv2(srag_gal_comp,paste0(pasta_interm, "srag_manual.csv"))
+```
+
+### Juntando banco relacionado com o banco não relacionado de Srag
+
+```{r, unir_prob_nprob}
+
+### separando banco não relacionado
+srag_n_relacionado = srag_dedup|>
+  anti_join(srag_gal_prob_, by = c("id_srag_sivep" = "id_srag_sivep.srag"))
+
+
+### estatisticas
+nrow(srag_n_relacionado)
+ncol(srag_n_relacionado)
+
+
+### renomeando variáveis para o padrão do relacionamento
+colnames(srag_n_relacionado) = paste0(colnames(srag_n_relacionado),".srag")
+
+glimpse(srag_gal_prob_)
+
+srag_total = srag_gal_prob_|>
+  bind_rows(srag_n_relacionado, .id = "id_junction" )|>
+  mutate(
+    tipo_link = case_when(
+      id_junction == "2" ~ "no-link",
+      score_final == 4 ~ "perfect-pair",
+      .default = "prob_pair"),
+    )
+
+srag_total|>count(tipo_link)
+glimpse(srag_gal_prob_)
+
+### sumarizando dados sem deduplicar
+
+#### total de pares
+par_srag_geral = srag_total |>
+  mutate(tipo_link2 = case_when(
+    str_detect(tipo_link,"pair") ~ "pair",
+    .default = tipo_link
+  ))|>
+  filter(tipo_link2 == "pair") |>
+  count(tipo_link2) |>
+  mutate(perc = round(n / nrow(srag_total) * 100, 2))|>
+  mutate(
+    n_formatado = format(n, big.mark = ".", decimal.mark = ","),
+    resultado = paste0(n_formatado," (",formatC(perc,
+                                                format = "f",
+                                                digits = 2),"%)")
+  ) |>
+  select(tipo_link2, resultado)|>
+  rename("tipo_link" = "tipo_link2")
+
+#### sumario geral
+sumario_srag_geral = srag_total |>
+  count(tipo_link) |>
+  mutate(perc = round(n / sum(n) * 100, 2))|>
+  adorn_totals(name = "Total") |>
+  mutate(
+    n_formatado = format(n, big.mark = ".", decimal.mark = ","),
+    resultado = paste0(n_formatado," (",formatC(perc,
+                                                format = "f",
+                                                digits = 2),"%)")
+  ) |>
+  select(tipo_link, resultado)|>
+  bind_rows(par_srag_geral)
+
+sumario_srag_geral
+
+
+### sumarizando dados sem deduplicar
+
+#### total de pares
+par_srag_dedup = srag_total |>
+  distinct(id_srag_sivep.srag, .keep_all = T)|>
+  mutate(tipo_link2 = case_when(
+    str_detect(tipo_link,"pair") ~ "pair",
+    .default = tipo_link
+  ))|>
+  filter(tipo_link2 == "pair") |>
+  count(tipo_link2) |>
+  mutate(perc = round(n / nrow(distinct(srag_total, 
+                                        id_srag_sivep.srag, 
+                                        .keep_all = T)) * 100, 2))|>
+  mutate(
+    n_formatado = format(n, big.mark = ".", decimal.mark = ","),
+    resultado = paste0(n_formatado," (",formatC(perc,
+                                                format = "f",
+                                                digits = 2),"%)")
+  ) |>
+  select(tipo_link2, resultado)|>
+  rename("tipo_link" = "tipo_link2")
+
+
+#### sumario geral
+sumario_srag_dedup = srag_total |>
+  distinct(id_srag_sivep.srag, .keep_all = T)|>
+  count(tipo_link) |>
+  mutate(perc = round(n / sum(n) * 100, 2))|>
+  adorn_totals(name = "Total") |>
+  mutate(
+    n_formatado = format(n, big.mark = ".", decimal.mark = ","),
+    resultado = paste0(n_formatado," (",formatC(perc,
+                                                format = "f",
+                                                digits = 2),"%)")
+  ) |>
+  select(tipo_link, resultado)|>
+  bind_rows(par_srag_dedup)
+
+sumario_srag_dedup
+
+nrow(srag_total|>distinct(id_gal.gal))
+
+write_csv2(srag_total, paste0(pasta_interm,"srag_gal_soprob_final_.csv"))
+
+write_parquet(srag_total, paste0(pasta_interm,"srag_gal_soprob_final.parquet"))
+
+glimpse(srag_total)
+```
+
+### Unificando resultados dos exames
+
+```{r, unif_results_gal}
+
+bd_srag = read_parquet(paste0(pasta_interm,"srag_gal_soprob_final.parquet"))
+
+glimpse(bd_srag)
+
+bd_srag$id_srag_sivep.srag
+
+bd_srag_cont = bd_srag|>
+  group_by(id_srag_sivep.srag)|>
+  mutate(cont = n())|>
+  ungroup()
+
+bd_srag_cont$cont
+
+bd_srag_cont|>
+  count(cont)
+
+bd_srag_many = bd_srag_cont|>
+  filter(cont >= 2)
+
+bd_srag_many|>
+  count(cont)
+
+glimpse(bd_srag_many)
+
+# Lista de vírus (prefixos) - você pode gerar dinamicamente
+virus_list <-  c(
+  "flu_a_h1n1_pdm09",
+  "flu_a_h3_sazo",
+  "flu_a_h5n1",
+  "flu_a_h7n9",
+  "flu_a_ne",
+  "flu_b_ne",
+  "sars_cov_2",
+  "hcov_229e",
+  "hcov_hku1",
+  "hcov_nl63",
+  "hcov_oc43",
+  "vsr_a",
+  "vsr_b",
+  "vsr_ne",
+  "adeno",
+  "mpv_a",
+  "mpv_b",
+  "mpv_ne",
+  "rino_ab",
+  "rino_ne",
+  "paraflu_1",
+  "paraflu_2",
+  "paraflu_3",
+  "paraflu_4",
+  "boca",
+  "entero",
+  "parecho"
+) # exemplo
+
+list_dedup_srag_gal_ = list()
+
+
+
+for(v in virus_list){
+  # Seleciona colunas do vírus atual
+  cols_v <- c(grep(paste0("^",v, "_"), names(bd_srag_many), value = TRUE),"dt_coleta.gal")
+  col_resultado = paste0(v,"_resultado.gal")
+  
+  # Pivotar para formato longo
+  dados <- bd_srag_many %>%
+    select(id_srag_sivep.srag, all_of(cols_v))|>
+    rename(!!paste0(v,"_dt_coleta.gal") := "dt_coleta.gal")|>
+    filter(!is.na(.data[[col_resultado]]))|>
+    arrange(.data[[col_resultado]])
+  
+  n_antes = nrow(dados)
+  
+  dados = dados|>
+    distinct(id_srag_sivep.srag, .keep_all = T)
+  
+  n_depois = nrow(dados)
+
+  list_dedup_srag_gal_[[v]] = dados
+  
+  cat("\n\nVírus: ",v,
+      "\nN de exames gal: ", n_antes,
+      "\nN de resultados dedup: ", n_depois,
+      "\nRedução:", round((1 - n_depois/n_antes) * 100, 2), "%\n")
+}
+
+unif_srag_gal = bind_rows(list_dedup_srag_gal_)|>
+  select(id_srag_sivep.srag)|>
+  unique()|>
+  arrange(id_srag_sivep.srag)
+
+
+for (v in virus_list) {
+  obj_name <- v
+  
+  if (!is.null(list_dedup_srag_gal_[[obj_name]])) {
+    unif_srag_gal <- unif_srag_gal |>
+      left_join(
+        list_dedup_srag_gal_[[obj_name]],
+        by = "id_srag_sivep.srag"
+      )
+    
+    cat("\n✅ Join realizado para:", obj_name, "\n")
+    cat("Linhas após join:", nrow(unif_srag_gal), "\n")
+  } else {
+    cat("\n⚠️ Objeto não encontrado na lista:", obj_name, "\n")
+  }
+}
+
+glimpse(unif_srag_gal)
+
+glimpse(bd_srag_many)
+
+bd_srag_many_unif = bd_srag_many|>
+  select(-matches(paste(virus_list, collapse = "|")))|>
+  distinct(id_srag_sivep.srag, .keep_all = T)|>
+  left_join(unif_srag_gal, by = "id_srag_sivep.srag")
+
+glimpse(bd_srag_many_unif)
+
+# unique(bd_srag_unif_final$parecho_resultado.gal)
+
+bd_srag_unif_final <- bd_srag %>%
+  distinct(id_srag_sivep.srag, .keep_all = T )|>
+  anti_join(bd_srag_many_unif %>% select(id_srag_sivep.srag), by = "id_srag_sivep.srag") %>%
+  bind_rows(bd_srag_many_unif) 
+
+
+
+
+bd_srag_unif_final2 <- bd_srag_unif_final |>
+  mutate(
+    flu_a_h1n1_pdm09_dt_coleta.gal = case_when(
+      !is.na(flu_a_h1n1_pdm09_resultado.gal) & is.na(flu_a_h1n1_pdm09_dt_coleta.gal) ~ dt_coleta.gal,
+      .default = flu_a_h1n1_pdm09_dt_coleta.gal),
+    
+    flu_a_h3_sazo_dt_coleta.gal = case_when(
+      !is.na(flu_a_h3_sazo_resultado.gal) & is.na(flu_a_h3_sazo_dt_coleta.gal) ~ dt_coleta.gal,
+      .default = flu_a_h3_sazo_dt_coleta.gal),
+    
+    flu_a_h5n1_dt_coleta.gal = case_when(
+      !is.na(flu_a_h5n1_resultado.gal) & is.na(flu_a_h5n1_dt_coleta.gal) ~ dt_coleta.gal,
+      .default = flu_a_h5n1_dt_coleta.gal),
+    
+    flu_a_h7n9_dt_coleta.gal = case_when(
+      !is.na(flu_a_h7n9_resultado.gal) & is.na(flu_a_h7n9_dt_coleta.gal) ~ dt_coleta.gal,
+      .default = flu_a_h7n9_dt_coleta.gal),
+    
+    flu_a_ne_dt_coleta.gal = case_when(
+      !is.na(flu_a_ne_resultado.gal) & is.na(flu_a_ne_dt_coleta.gal) ~ dt_coleta.gal,
+      .default = flu_a_ne_dt_coleta.gal),
+    
+    flu_b_ne_dt_coleta.gal = case_when(
+      !is.na(flu_b_ne_resultado.gal) & is.na(flu_b_ne_dt_coleta.gal) ~ dt_coleta.gal,
+      .default = flu_b_ne_dt_coleta.gal),
+    
+    sars_cov_2_dt_coleta.gal = case_when(
+      !is.na(sars_cov_2_resultado.gal) & is.na(sars_cov_2_dt_coleta.gal) ~ dt_coleta.gal,
+      .default = sars_cov_2_dt_coleta.gal),
+    
+    hcov_229e_dt_coleta.gal = case_when(
+      !is.na(hcov_229e_resultado.gal) & is.na(hcov_229e_dt_coleta.gal) ~ dt_coleta.gal,
+      .default = hcov_229e_dt_coleta.gal),
+    
+    hcov_hku1_dt_coleta.gal = case_when(
+      !is.na(hcov_hku1_resultado.gal) & is.na(hcov_hku1_dt_coleta.gal) ~ dt_coleta.gal,
+      .default = hcov_hku1_dt_coleta.gal),
+    
+    hcov_nl63_dt_coleta.gal = case_when(
+      !is.na(hcov_nl63_resultado.gal) & is.na(hcov_nl63_dt_coleta.gal) ~ dt_coleta.gal,
+      .default = hcov_nl63_dt_coleta.gal),
+    
+    hcov_oc43_dt_coleta.gal = case_when(
+      !is.na(hcov_oc43_resultado.gal) & is.na(hcov_oc43_dt_coleta.gal) ~ dt_coleta.gal,
+      .default = hcov_oc43_dt_coleta.gal),
+    
+    vsr_a_dt_coleta.gal = case_when(
+      !is.na(vsr_a_resultado.gal) & is.na(vsr_a_dt_coleta.gal) ~ dt_coleta.gal,
+      .default = vsr_a_dt_coleta.gal),
+    
+    vsr_b_dt_coleta.gal = case_when(
+      !is.na(vsr_b_resultado.gal) & is.na(vsr_b_dt_coleta.gal) ~ dt_coleta.gal,
+      .default = vsr_b_dt_coleta.gal),
+    
+    vsr_ne_dt_coleta.gal = case_when(
+      !is.na(vsr_ne_resultado.gal) & is.na(vsr_ne_dt_coleta.gal) ~ dt_coleta.gal,
+      .default = vsr_ne_dt_coleta.gal),
+    
+    adeno_dt_coleta.gal = case_when(
+      !is.na(adeno_resultado.gal) & is.na(adeno_dt_coleta.gal) ~ dt_coleta.gal,
+      .default = adeno_dt_coleta.gal),
+    
+    mpv_a_dt_coleta.gal = case_when(
+      !is.na(mpv_a_resultado.gal) & is.na(mpv_a_dt_coleta.gal) ~ dt_coleta.gal,
+      .default = mpv_a_dt_coleta.gal),
+    
+    mpv_b_dt_coleta.gal = case_when(
+      !is.na(mpv_b_resultado.gal) & is.na(mpv_b_dt_coleta.gal) ~ dt_coleta.gal,
+      .default = mpv_b_dt_coleta.gal),
+    
+    mpv_ne_dt_coleta.gal = case_when(
+      !is.na(mpv_ne_resultado.gal) & is.na(mpv_ne_dt_coleta.gal) ~ dt_coleta.gal,
+      .default = mpv_ne_dt_coleta.gal),
+    
+    rino_ab_dt_coleta.gal = case_when(
+      !is.na(rino_ab_resultado.gal) & is.na(rino_ab_dt_coleta.gal) ~ dt_coleta.gal,
+      .default = rino_ab_dt_coleta.gal),
+    
+    rino_ne_dt_coleta.gal = case_when(
+      !is.na(rino_ne_resultado.gal) & is.na(rino_ne_dt_coleta.gal) ~ dt_coleta.gal,
+      .default = rino_ne_dt_coleta.gal),
+    
+    paraflu_1_dt_coleta.gal = case_when(
+      !is.na(paraflu_1_resultado.gal) & is.na(paraflu_1_dt_coleta.gal) ~ dt_coleta.gal,
+      .default = paraflu_1_dt_coleta.gal),
+    
+    paraflu_2_dt_coleta.gal = case_when(
+      !is.na(paraflu_2_resultado.gal) & is.na(paraflu_2_dt_coleta.gal) ~ dt_coleta.gal,
+      .default = paraflu_2_dt_coleta.gal),
+    
+    paraflu_3_dt_coleta.gal = case_when(
+      !is.na(paraflu_3_resultado.gal) & is.na(paraflu_3_dt_coleta.gal) ~ dt_coleta.gal,
+      .default = paraflu_3_dt_coleta.gal),
+    
+    paraflu_4_dt_coleta.gal = case_when(
+      !is.na(paraflu_4_resultado.gal) & is.na(paraflu_4_dt_coleta.gal) ~ dt_coleta.gal,
+      .default = paraflu_4_dt_coleta.gal),
+    
+    boca_dt_coleta.gal = case_when(
+      !is.na(boca_resultado.gal) & is.na(boca_dt_coleta.gal) ~ dt_coleta.gal,
+      .default = boca_dt_coleta.gal),
+    
+    entero_dt_coleta.gal = case_when(
+      !is.na(entero_resultado.gal) & is.na(entero_dt_coleta.gal) ~ dt_coleta.gal,
+      .default = entero_dt_coleta.gal),
+    
+    parecho_dt_coleta.gal = case_when(
+      !is.na(parecho_resultado.gal) & is.na(parecho_dt_coleta.gal) ~ dt_coleta.gal,
+      .default = parecho_dt_coleta.gal)
+  )
+
+
+glimpse(bd_srag_unif_final2)
+
+bd_srag_unif_final2 = bd_srag_unif_final2|>
+  select(-id_gal.gal,
+         -paciente_nome_.gal,
+        -pnome_pac.gal,
+        -paciente_nome_mae_.gal,
+        -pnome_mae.gal,
+        -paciente_sexo.gal,
+        -dt_nasc.gal,
+        -ano_nasc.gal,
+        -cod_mun_res.gal,
+        -uf_res.gal,
+        -dt_coleta.gal,
+        -id_srag_sivep.srag,
+        -paciente_nome_.srag,
+        -pnome_pac.srag,
+        -paciente_nome_mae_.srag,
+        -pnome_mae.srag,
+        -paciente_sexo.srag,
+        -dt_nasc.srag,
+        -ano_nasc.srag,
+        -cod_mun_res.srag,
+        -uf_res.srag,
+        -dt_pri_sin.srag)
+
+write_csv2(bd_srag_unif_final2, paste0(pasta_interm,"srag_gal_unif_soprob_final.csv"))
+
+write_parquet(bd_srag_unif_final2, paste0(pasta_interm,"srag_gal_unif_soprob_final.parquet"))
+
+
+```
+
+## Link gal + sg sivep
+
+### Lendo o bd sg
+
+```{r, lendo_dedups}
+sg_dedup = read_csv2(paste0(pasta_interm,"sg_sivep_dedup.csv"))
+```
+
+### Probabilistico - jw para nomes e hamming para data
+
+#### gerando chave - se necessário
+
+```{r, prob_sg_gal}
+
+sg_dedup = sg_dedup|>
+  mutate(paciente_nome_ = str_replace_all(paciente_nome, "\\s+", ""),
+         paciente_nome_mae_ = str_replace_all(paciente_nome_mae, "\\s+", "")) 
+
+sg_prob = sg_dedup |>
+  rename("cod_mun_res" = COD_MUNRES)|>
+  mutate(cod_mun_res = as.character(cod_mun_res))|>
+  select(
+    id_sg_sivep,
+    paciente_nome_,
+    pnome_pac,
+    paciente_nome_mae_,
+    pnome_mae,
+    paciente_sexo,
+    dt_nasc,
+    ano_nasc,
+    cod_mun_res,
+    uf_res,
+    ano_pri_sin,
+    ano_notific)|>
+  rename("id_" = "id_sg_sivep")|>
+  mutate(ano = ano_notific)
+
+x_ = nrow(sg_prob)
+
+glimpse(sg_prob)
+
+y_ = nrow(gal_prob)
+
+glimpse(gal_prob)
+
+```
+
+#### projetando quais seriam os melhores pares sem explodir
+
+```{r, test_pares}
+
+# Vetor de variáveis
+vars <- c("paciente_nome_",
+          "pnome_pac",
+          "paciente_nome_mae_",
+          "pnome_mae",
+          "paciente_sexo",
+          "dt_nasc",
+          "ano_nasc",
+          "cod_mun_res",
+          "uf_res")
+
+# Todas as combinações de 3 variáveis
+combs <- combn(vars, 2, simplify = FALSE)
+
+# Lista para armazenar pares e log
+lista_pares <- list()
+log_resultados <- data.frame(
+  combinacao = character(),
+  status = character(),
+  n_pares = numeric(),
+  stringsAsFactors = FALSE
+)
+
+# Loop com tryCatch para capturar erros
+safe_blocking <- safely(function(x, y, on) {
+  pair_blocking(x, y, on = on)
+}, otherwise = NULL)
+
+lista_pares <- vector("list", length(combs))
+lista_erros <- vector("list", length(combs))
+
+for (i in seq_along(combs)) {
+  comb_atual <- combs[[i]]
+  cat("Processando combinação", i, ":", paste(comb_atual, collapse = ", "), "\n")
+
+  res <- safe_blocking(sg_prob, gal_prob, on = comb_atual)
+
+  # Salva resultado (ou NULL)
+  lista_pares[[i]] <- res$result
+
+  # Salva erro (ou NULL)
+  lista_erros[[i]] <- res$error
+
+  if (is.null(res$error)) {
+    n_pares <- nrow(res$result)
+    status <- "Sucesso"
+  } else {
+    n_pares <- NA_integer_
+    status <- paste("Falhou:", conditionMessage(res$error))
+  }
+
+  log_resultados <- rbind(
+    log_resultados,
+    data.frame(
+      combinacao = paste(comb_atual, collapse = ", "),
+      status = status,
+      n_pares = n_pares
+    )
+  )
+
+  gc()
+}
+
+
+# Exibe resumo
+pares_teste = as.data.frame(log_resultados)|>
+  arrange(n_pares)
+
+view(pares_teste)
+
+rm(list = c("pares", "lista_pares"))
+
+```
+
+#### fazendo o link
+
+```{r, pareando_calc_dist_prob}
+
+### salvando os pares por blocos
+
+# Lista de combinações
+comb_list <- list(
+  c("cod_mun_res", "paciente_sexo", "ano_nasc"), #add a pedido
+  c("paciente_nome_", "ano_nasc"), #nova ok
+  c("paciente_nome_","pnome_mae"), #nova ok
+  c("paciente_nome_","uf_res"), #nova ok 
+  c("paciente_nome_mae_","ano_nasc"), #nova ok
+  c("pnome_pac","paciente_nome_mae_"), #nova ok
+  c("pnome_pac","dt_nasc"), #nova ok
+  c("paciente_nome_mae_", "uf_res"), #nova ok
+  c("pnome_mae","dt_nasc"), #nova ok
+  c("paciente_sexo", "dt_nasc"), #nova ok 
+  c("uf_res", "dt_nasc"), #nova ok
+  c("pnome_pac","cod_mun_res") #nova ok
+)
+
+# Lista para armazenar os resultados
+pares_estado <- list()
+
+inicio_pareamento = Sys.time()
+
+# Loop para gerar os pares e contar as linhas
+for (i in seq_along(comb_list)) {
+  pares_estado[[i]] <- pair_blocking(sg_prob, gal_prob, on = comb_list[[i]])
+  cat("pares_estado_", 
+      i, 
+      " (", 
+      paste(comb_list[[i]], collapse = ", "),
+      "): ", 
+      formatC(nrow(pares_estado[[i]]),
+              format = "f",
+              big.mark = ".",
+              decimal.mark = ",",
+              digits = 0), 
+      "\n", sep = "")
+  gc() # limpeza de memória
+}
+
+### unindo pares únicos
+pares_estado = do.call(rbind, pares_estado)
+
+n_pares_total = nrow(pares_estado)
+
+print(pares_estado)
+
+formatC(n_pares_total,
+        format = "f",
+        big.mark = ".",
+        decimal.mark = ",",
+        digits = 0)
+
+### calculando jw para nomes e hamming para data de nascimento
+pares_estado = pares_estado|>
+  compare_pairs(
+    on = c(    
+      "dt_nasc",
+      "paciente_nome_",
+      "paciente_sexo",
+      "paciente_nome_mae_"),
+    comparators = list(cmp_hamming_date(threshold = 0.85),
+                       cmp_jarowinkler(threshold = 0.85),
+                       cmp_identical(threshold = 0.85),
+                       cmp_jarowinkler(threshold = 0.85)))
+
+gc()
+final_calculo_dist = Sys.time()
+
+final_calculo_dist - inicio_pareamento
+
+save(pares_estado, file = paste0(pasta_interm,"pares_calc_sprob_sg.RData"))
+
+rm(pares_estado)
+```
+
+#### Estabelecendo ponto de corte e salvando pares total e verdadeiros
+
+```{r, calc_score_verd}
+load(paste0(pasta_interm,"pares_calc_sprob_sg.RData"))
+
+m1 = problink_em(~ paciente_nome_ + paciente_nome_mae_ + dt_nasc + paciente_sexo, data = pares_estado)
+
+print(m1)
+
+### escore
+pares_estado = score_simple(pares_estado, 
+                            variable = "score",
+                            on = c(    
+                              "paciente_nome_",
+                              "dt_nasc",
+                              "paciente_sexo",
+                              "paciente_nome_mae_"))
+
+
+### sinalizando registros selecionados como verdadeiros a partir do corte de 0.8 
+pares_estado = select_threshold(pares_estado, 
+                                variable = "paciente_nome_s",
+                                score = "paciente_nome_",
+                                threshold = 0.85,
+                                inplace = T)
+
+pares_estado = select_threshold(pares_estado, 
+                                variable = "paciente_nome_mae_s",
+                                score = "paciente_nome_mae_",
+                                threshold = 0.85,
+                                inplace = T)
+
+pares_estado = select_threshold(pares_estado, 
+                                variable = "paciente_sexo_s",
+                                score = "paciente_sexo",
+                                threshold = 1,
+                                inplace = T)
+
+pares_estado = select_threshold(pares_estado, 
+                                variable = "dt_nasc_s",
+                                score = "dt_nasc",
+                                threshold = 0.85,
+                                inplace = T)
+
+
+## media das pontuações para estatística
+med_d_pac_nome = mean(pares_estado$paciente_nome_)
+med_d_pac_nome_mae = mean(pares_estado$paciente_nome_mae_, na.rm = T)
+med_d_pac_sexo = mean(pares_estado$paciente_sexo)
+med_d_dt_nasc = mean(replace(pares_estado$dt_nasc, -Inf, 0), na.rm = T)
+
+
+
+print(pares_estado)
+### filtra pares verdadeiros
+pares_verd_estado = pares_estado[paciente_nome_s == T &
+                                   paciente_nome_mae_s == T &
+                                   dt_nasc_s == T &
+                                   paciente_sexo_s == T]
+gc()
+
+## media das pontuações para estatística
+med_d_pac_nome_verd = mean(pares_verd_estado$paciente_nome_)
+med_d_pac_nome_mae_verd = mean(pares_verd_estado$paciente_nome_mae_)
+med_d_pac_sexo_verd = mean(pares_verd_estado$paciente_sexo)
+med_d_dt_nasc_verd = mean(pares_verd_estado$dt_nasc)
+
+n_pares_verd = nrow(pares_verd_estado)
+
+# Salvando os arquivos de pares arquivos .RData
+save(pares_estado, file = paste0(pasta_interm,"pares_estado_sg.RData"))
+
+save(pares_verd_estado, file = paste0(pasta_interm,"pares_verd_estado_sg.RData"))
+
+rm(list = c("pares_estado"))
+
+gc()
+```
+
+#### Gerando banco de pares verdadeiros com todas as variáveis originais
+
+```{r, cbind_verd_bd_originais}
+load(paste0(pasta_interm,"pares_verd_estado_sg.RData"))
+
+m2 = problink_em(~ paciente_nome_ + paciente_nome_mae_ + dt_nasc + paciente_sexo, data = pares_verd_estado)
+
+print(m2)
+### selecionando o banco completo por pares
+pares_estado_sg = sg_dedup[pares_verd_estado$.x,]
+
+pares_estado_gal = gal_dedup[pares_verd_estado$.y,]
+
+### separando colunas de score
+
+score_dt_nasc = tibble(score_dt_nasc = pares_verd_estado$dt_nasc)
+score_sexo = tibble(score_sexo = pares_verd_estado$paciente_sexo)
+score_pac_nome = tibble(score_pac_nome = pares_verd_estado$paciente_nome_)
+score_nome_mae = tibble(score_nome_mae = pares_verd_estado$paciente_nome_mae_)
+
+score_final = tibble(score_final = pares_verd_estado$paciente_nome_+
+  pares_verd_estado$paciente_nome_mae_+
+  pares_verd_estado$dt_nasc+
+  pares_verd_estado$paciente_sexo)
+
+
+## renomeando variaveis do banco para evitar conflitos de nome
+colnames(pares_estado_sg) = paste0(colnames(pares_estado_sg), ".sg")
+
+colnames(pares_estado_gal) = paste0(colnames(pares_estado_gal), ".gal")
+
+
+### juntando sg e gal completo dos pares verdadeiros
+sg_gal_prob = bind_cols(pares_estado_sg,
+                          pares_estado_gal,
+                          score_dt_nasc,
+                          score_sexo,
+                          score_pac_nome,
+                          score_nome_mae,
+                          score_final)
+
+rm(list = c("pares_estado_sg","pares_estado_gal"))
+
+gc()
+glimpse(sg_gal_prob)
+```
+
+#### Filtrando pela diferença entre dt_pri_sin e dt_coleta aceitavel
+
+```{r, filt_dt_diff_pri_sin_coleta}
+### criando diferença entre dias do inicio dos sintomas e coleta
+sg_gal_prob = sg_gal_prob|>
+  mutate(dif_link = as.numeric(dt_coleta.gal - dt_pri_sin.sg))
+
+
+### contabizando linhas de acordo com os próximos filtros
+a = nrow(sg_gal_prob)
+b = nrow(sg_gal_prob|>
+           filter(!is.na(uf_res.gal)))
+negativos <- round(nrow(sg_gal_prob |> filter(dif_link < 0)),1)
+acima <- round(nrow(sg_gal_prob |> filter(dif_link > 30)),1)
+
+
+### estatísticas da diferença entre dias do inicio dos sintomas e coleta
+media = round(mean(sg_gal_prob$dif_link, na.rm = T),1)
+max = round(max(sg_gal_prob$dif_link, na.rm = T),1)
+min = round(min(sg_gal_prob$dif_link, na.rm = T),1)
+med = round(quantile(sg_gal_prob$dif_link, 0.50, na.rm = T),1)
+q1 <- round(quantile(sg_gal_prob$dif_link, 0.25, na.rm = T),1)
+q3 <- round(quantile(sg_gal_prob$dif_link, 0.75, na.rm = T),1)
+
+
+## filtrando pelas datas provaveis de coincidencia entre inicio dos sintomas e coleta
+sg_gal_prob_ = sg_gal_prob|>
+  filter(dif_link >= 0 & dif_link <= 30 &
+           !is.na(uf_res.gal))
+
+view(sg_gal_prob_)
+
+### contabizando linhas de acordo com os próximos filtros
+c = nrow(sg_gal_prob_)
+
+### estatísticas da diferença entre dias do inicio dos sintomas e coleta
+media_2 = round(mean(sg_gal_prob_$dif_link, na.rm = T),1)
+max_2 = round(max(sg_gal_prob_$dif_link, na.rm = T),1)
+min_2 = round(min(sg_gal_prob_$dif_link, na.rm = T),1)
+med_2 = round(quantile(sg_gal_prob_$dif_link, 0.50, na.rm = T),1)
+q1_2 <- round(quantile(sg_gal_prob_$dif_link, 0.25, na.rm = T),1)
+q3_2 <- round(quantile(sg_gal_prob_$dif_link, 0.75, na.rm = T),1)
+
+rm(list = c("sg_gal_prob"))
+```
+
+#### Estatístisticas do relacionamento
+
+```{r, estat_prob}
+
+cat(
+  "N geral de registros de sg para prob: ",
+  formatC(x_, format = "f", big.mark =".", decimal.mark = ",", digits = 0),
+  "\nN geral de registros do Gal para prob: ",
+  formatC(y_, format = "f", big.mark =".", decimal.mark = ",", digits = 0),
+  "\n\nN pares gerados pela blocagem: ",
+  n_pares_total,
+  "\nMédia do score:",
+  "\n - Data de nascimento: ",formatC(med_d_dt_nasc, format = "f", big.mark =".", decimal.mark = ",", digits = 2),
+  "\n - Sexo: ",formatC(med_d_pac_sexo, format = "f", big.mark =".", decimal.mark = ",", digits = 2),
+  "\n - Nome do paciente: ",formatC(med_d_pac_sexo, format = "f", big.mark =".", decimal.mark = ",", digits = 2),
+  "\n - Nome da mãe: ",formatC(med_d_pac_sexo, format = "f", big.mark =".", decimal.mark = ",", digits = 2),
+  "\n\nN pares considerados verdadeiros: ",
+  n_pares_verd, "(",
+  formatC((n_pares_verd - x_) / x_ * 100, 
+          format = "f", 
+          digits = 1, 
+          big.mark =".", 
+          decimal.mark = ","), 
+  " % do total de registros inicial)",
+  "\nMédia do score:",
+  "\n - Data de nascimento: ",formatC(med_d_dt_nasc_verd, format = "f", big.mark =".", decimal.mark = ",", digits = 2),
+  "\n - Sexo: ",formatC(med_d_pac_sexo_verd, format = "f", big.mark =".", decimal.mark = ",", digits = 2),
+  "\n - Nome do paciente: ",formatC(med_d_pac_sexo_verd, format = "f", big.mark =".", decimal.mark = ",", digits = 2),
+  "\n - Nome da mãe: ",formatC(med_d_pac_sexo_verd, format = "f", big.mark =".", decimal.mark = ",", digits = 2),
+  "\n\n\n# Após link sem filtro de data: ",
+  "\nLinhas do banco de sg relacionado após junção dos bancos originais: ",
+  a,
+  " (+",
+  formatC((a - x_) / x_ * 100, format = "f", digits = 1),
+  "%)\nLinhas do GAL relacionadas pelo probabilistico: ",
+  b,
+  " (",
+  formatC(b / y_ * 100, format = "f", digits = 1),
+  "% do Gal separado e ",
+  formatC(b / x_ * 100, format = "f", digits = 1) ,
+  "% do sg inicial para probabilistico)",
+  "\nDif_link negativo: ", negativos,
+  "\nDif_link > 30 dias: ", acima, 
+  "\nMédia (min - max): ", media, " (", min, " - ", max,")", 
+  "\nMediana (Q1-Q3): ", med, " (", q1, " - ", q3,")",
+  "\n\n\n# Após filtragem da diferença entre a data de início dos sintomas e coleta: ",
+  "\nLinhas após join: ",
+  c,
+  " (",
+  formatC(c / y_ * 100, format = "f", digits = 1),
+  "% do Gal encontrado e ",
+  formatC(c / x_ * 100, format = "f", digits = 1) ,
+  "% do sg encontrado)",
+  "\nMédia (min - max): ", media_2, " (", min_2, " - ", max_2,")", 
+  "\nMediana (Q1-Q3): ", med_2, " (", q1_2, " - ", q3_2,")",
+  "\n\n\n",
+  sep = ""
+)
+
+
+
+##salvando  dados do probabilistico final
+write_parquet(sg_gal_prob_, paste0(pasta_interm,"sg_gal_prob.parquet"))
+
+glimpse(sg_gal_prob_)
+
+gc()
+
+sg_gal_prob_ = read_parquet(paste0(pasta_interm,"sg_gal_prob.parquet"))
+
+nrow(sg_gal_prob_|>
+       distinct(id_gal.gal))
+```
+
+### Revisando manualmente (amostra pequena)
+
+```{r, rev_manual}
+
+### lendo o banco 
+sg_gal_prob_ = read_parquet(paste0(pasta_interm,"sg_gal_prob.parquet"))
+
+### reformando a chave
+sg_gal_prob_ = sg_gal_prob_|>
+    mutate(chave = paste0(
+      paciente_nome.sg,
+      paciente_nome_mae.sg,
+      uf_res.sg,
+      paciente_sexo.sg,
+      dt_nasc.sg,
+      dt_pri_sin.sg),
+      chave = str_replace_all(chave,"\\s+", ""))
+
+### Estatisticas
+length(unique(sg_gal_prob_$chave))
+nrow(sg_gal_prob_)
+ncol(sg_gal_prob_)
+glimpse(sg_gal_prob_)
+
+
+### banco para revisão manual
+sg_gal_comp = sg_gal_prob_|>
+  select(
+    paciente_nome.sg,
+    paciente_nome.gal,
+    paciente_nome_mae.sg,
+    paciente_nome_mae.gal,
+    paciente_sexo.sg,
+    paciente_sexo.gal,
+    dt_nasc.sg,
+    dt_nasc.gal,
+    dt_pri_sin.sg,
+    dt_coleta.gal,
+    dif_link,
+    uf_res.sg,
+    uf_res.gal,
+    score_final
+  )|>
+  mutate(
+    nome_igual = case_when(
+      paciente_nome.sg == paciente_nome.gal ~ T,
+      .default = F
+    ),
+    nome_mae_igual = case_when(
+      paciente_nome_mae.sg == paciente_nome_mae.gal ~ T,
+      .default = F
+    ),
+    dt_nasc_igual = case_when(
+      dt_nasc.sg == dt_nasc.gal ~ T,
+      .default = F
+    ),
+    sexo_igual = case_when(
+      paciente_sexo.sg == paciente_sexo.gal ~ T,
+      .default = F
+    )
+  )|>
+  filter(nome_igual == F & nome_mae_igual == F & dt_nasc_igual == F)
+
+view(sg_gal_comp)
+
+write_csv2(sg_gal_comp,paste0(pasta_interm, "sg_manual.csv"))
+```
+
+### Juntando banco relacionado com o banco não relacionado de sg
+
+```{r, unir_prob_nprob}
+
+### separando banco não relacionado
+sg_n_relacionado = sg_dedup|>
+  anti_join(sg_gal_prob_, by = c("id_sg_sivep" = "id_sg_sivep.sg"))
+
+
+### estatisticas
+nrow(sg_n_relacionado)
+ncol(sg_n_relacionado)
+
+
+### renomeando variáveis para o padrão do relacionamento
+colnames(sg_n_relacionado) = paste0(colnames(sg_n_relacionado),".sg")
+
+glimpse(sg_gal_prob_)
+
+sg_total = sg_gal_prob_|>
+  bind_rows(sg_n_relacionado, .id = "id_junction" )|>
+  mutate(
+    tipo_link = case_when(
+      id_junction == "2" ~ "no-link",
+      score_final == 4 ~ "perfect-pair",
+      .default = "prob_pair"),
+    )
+
+sg_total|>count(tipo_link)
+glimpse(sg_gal_prob_)
+
+par_sg_geral = sg_total |>
+  mutate(tipo_link2 = case_when(
+    str_detect(tipo_link,"pair") ~ "pair",
+    .default = tipo_link
+  ))|>
+  filter(tipo_link2 == "pair") |>
+  count(tipo_link2) |>
+  mutate(perc = round(n / nrow(sg_total) * 100, 2))|>
+  mutate(
+    n_formatado = format(n, big.mark = ".", decimal.mark = ","),
+    resultado = paste0(n_formatado," (",formatC(perc,
+                                                format = "f",
+                                                digits = 2),"%)")
+  ) |>
+  select(tipo_link2, resultado)|>
+  rename("tipo_link" = "tipo_link2")
+
+sumario_sg_geral = sg_total |>
+  count(tipo_link) |>
+  mutate(perc = round(n / sum(n) * 100, 2))|>
+  adorn_totals(name = "Total") |>
+  mutate(
+    n_formatado = format(n, big.mark = ".", decimal.mark = ","),
+    resultado = paste0(n_formatado," (",formatC(perc,
+                                                format = "f",
+                                                digits = 2),"%)")
+  ) |>
+  select(tipo_link, resultado)|>
+  bind_rows(par_sg_geral)
+
+sumario_sg_geral
+
+par_sg_dedup = sg_total |>
+  distinct(id_sg_sivep.sg, .keep_all = T)|>
+  mutate(tipo_link2 = case_when(
+    str_detect(tipo_link,"pair") ~ "pair",
+    .default = tipo_link
+  ))|>
+  filter(tipo_link2 == "pair") |>
+  count(tipo_link2) |>
+  mutate(perc = round(n / nrow(distinct(sg_total, 
+                                        id_sg_sivep.sg, 
+                                        .keep_all = T)) * 100, 2))|>
+  mutate(
+    n_formatado = format(n, big.mark = ".", decimal.mark = ","),
+    resultado = paste0(n_formatado," (",formatC(perc,
+                                                format = "f",
+                                                digits = 2),"%)")
+  ) |>
+  select(tipo_link2, resultado)|>
+  rename("tipo_link" = "tipo_link2")
+
+sumario_sg_dedup = sg_total |>
+  distinct(id_sg_sivep.sg, .keep_all = T)|>
+  count(tipo_link) |>
+  mutate(perc = round(n / sum(n) * 100, 2))|>
+  adorn_totals(name = "Total") |>
+  mutate(
+    n_formatado = format(n, big.mark = ".", decimal.mark = ","),
+    resultado = paste0(n_formatado," (",formatC(perc,
+                                                format = "f",
+                                                digits = 2),"%)")
+  ) |>
+  select(tipo_link, resultado)|>
+  bind_rows(par_sg_dedup)
+
+sumario_sg_dedup
+
+write_csv2(sg_total, paste0(pasta_interm,"sg_gal_soprob_final.csv"))
+
+write_parquet(sg_total, paste0(pasta_interm,"sg_gal_soprob_final.parquet"))
+
+glimpse(sg_total)
+```
+
+### Unificando resultados dos exames
+
+```{r, unif_results_gal}
+
+bd_sg = read_parquet(paste0(pasta_inter_link,"sg_gal_soprob_final.parquet"))
+
+glimpse(bd_sg)
+
+bd_sg$id_sg_sivep.sg
+
+bd_sg_cont = bd_sg|>
+  group_by(id_sg_sivep.sg)|>
+  mutate(cont = n())|>
+  ungroup()
+
+bd_sg_cont$cont
+
+bd_sg_cont|>
+  count(cont)
+
+bd_sg_many = bd_sg_cont|>
+  filter(cont >= 2)
+
+bd_sg_many|>
+  count(cont)
+
+glimpse(bd_sg_many)
+
+# Lista de vírus (prefixos) - você pode gerar dinamicamente
+virus_list <-  c(
+  "flu_a_h1n1_pdm09",
+  "flu_a_h3_sazo",
+  "flu_a_h5n1",
+  "flu_a_h7n9",
+  "flu_a_ne",
+  "flu_b_ne",
+  "sars_cov_2",
+  "hcov_229e",
+  "hcov_hku1",
+  "hcov_nl63",
+  "hcov_oc43",
+  "vsr_a",
+  "vsr_b",
+  "vsr_ne",
+  "adeno",
+  "mpv_a",
+  "mpv_b",
+  "mpv_ne",
+  "rino_ab",
+  "rino_ne",
+  "paraflu_1",
+  "paraflu_2",
+  "paraflu_3",
+  "paraflu_4",
+  "boca",
+  "entero",
+  "parecho"
+) # exemplo
+
+list_dedup_sg_gal_ = list()
+
+unique(sort(bd_sg_many$flu_a_h1n1_pdm09_resultado.gal))
+
+for(v in virus_list){
+  # Seleciona colunas do vírus atual
+  cols_v <- c(grep(paste0("^",v, "_"), names(bd_sg_many), value = TRUE),"dt_coleta.gal")
+  col_resultado = paste0(v,"_resultado.gal")
+  
+  # Pivotar para formato longo
+  dados <- bd_sg_many %>%
+    select(id_sg_sivep.sg, all_of(cols_v))|>
+    rename(!!paste0(v,"_dt_coleta.gal") := "dt_coleta.gal")|>
+    filter(!is.na(.data[[col_resultado]]))|>
+    arrange(.data[[col_resultado]])
+  
+  n_antes = nrow(dados)
+  
+  dados = dados|>
+    distinct(id_sg_sivep.sg, .keep_all = T)
+  
+  n_depois = nrow(dados)
+
+  list_dedup_sg_gal_[[v]] = dados
+  
+  cat("\n\nVírus: ",v,
+      "\nN de exames gal: ", n_antes,
+      "\nN de resultados dedup: ", n_depois,
+      "\nRedução:", round((1 - n_depois/n_antes) * 100, 2), "%\n")
+}
+
+unif_sg_gal = bind_rows(list_dedup_sg_gal_)|>
+  select(id_sg_sivep.sg)|>
+  unique()|>
+  arrange(id_sg_sivep.sg)
+
+
+for (v in virus_list) {
+  obj_name <- v
+  
+  if (!is.null(list_dedup_sg_gal_[[obj_name]])) {
+    unif_sg_gal <- unif_sg_gal |>
+      left_join(
+        list_dedup_sg_gal_[[obj_name]],
+        by = "id_sg_sivep.sg"
+      )
+    
+    cat("\n✅ Join realizado para:", obj_name, "\n")
+    cat("Linhas após join:", nrow(unif_sg_gal), "\n")
+  } else {
+    cat("\n⚠️ Objeto não encontrado na lista:", obj_name, "\n")
+  }
+}
+
+glimpse(unif_sg_gal)
+
+glimpse(bd_sg_many)
+
+bd_sg_many_unif = bd_sg_many|>
+  select(-matches(paste(virus_list, collapse = "|")))|>
+  distinct(id_sg_sivep.sg, .keep_all = T)|>
+  left_join(unif_sg_gal, by = "id_sg_sivep.sg")
+
+glimpse(bd_sg_many_unif)
+
+
+
+bd_sg_unif_final <- bd_sg %>%
+  distinct(id_sg_sivep.sg, .keep_all = T )|>
+  anti_join(bd_sg_many_unif %>% select(id_sg_sivep.sg), by = "id_sg_sivep.sg") %>%
+  bind_rows(bd_sg_many_unif) 
+
+unique(bd_sg_unif_final$parecho_resultado.gal)
+
+
+bd_sg_unif_final2 <- bd_sg_unif_final |>
+  mutate(
+    flu_a_h1n1_pdm09_dt_coleta.gal = case_when(
+      !is.na(flu_a_h1n1_pdm09_resultado.gal) & is.na(flu_a_h1n1_pdm09_dt_coleta.gal) ~ dt_coleta.gal,
+      .default = flu_a_h1n1_pdm09_dt_coleta.gal),
+    
+    flu_a_h3_sazo_dt_coleta.gal = case_when(
+      !is.na(flu_a_h3_sazo_resultado.gal) & is.na(flu_a_h3_sazo_dt_coleta.gal) ~ dt_coleta.gal,
+      .default = flu_a_h3_sazo_dt_coleta.gal),
+    
+    flu_a_h5n1_dt_coleta.gal = case_when(
+      !is.na(flu_a_h5n1_resultado.gal) & is.na(flu_a_h5n1_dt_coleta.gal) ~ dt_coleta.gal,
+      .default = flu_a_h5n1_dt_coleta.gal),
+    
+    flu_a_h7n9_dt_coleta.gal = case_when(
+      !is.na(flu_a_h7n9_resultado.gal) & is.na(flu_a_h7n9_dt_coleta.gal) ~ dt_coleta.gal,
+      .default = flu_a_h7n9_dt_coleta.gal),
+    
+    flu_a_ne_dt_coleta.gal = case_when(
+      !is.na(flu_a_ne_resultado.gal) & is.na(flu_a_ne_dt_coleta.gal) ~ dt_coleta.gal,
+      .default = flu_a_ne_dt_coleta.gal),
+    
+    flu_b_ne_dt_coleta.gal = case_when(
+      !is.na(flu_b_ne_resultado.gal) & is.na(flu_b_ne_dt_coleta.gal) ~ dt_coleta.gal,
+      .default = flu_b_ne_dt_coleta.gal),
+    
+    sars_cov_2_dt_coleta.gal = case_when(
+      !is.na(sars_cov_2_resultado.gal) & is.na(sars_cov_2_dt_coleta.gal) ~ dt_coleta.gal,
+      .default = sars_cov_2_dt_coleta.gal),
+    
+    hcov_229e_dt_coleta.gal = case_when(
+      !is.na(hcov_229e_resultado.gal) & is.na(hcov_229e_dt_coleta.gal) ~ dt_coleta.gal,
+      .default = hcov_229e_dt_coleta.gal),
+    
+    hcov_hku1_dt_coleta.gal = case_when(
+      !is.na(hcov_hku1_resultado.gal) & is.na(hcov_hku1_dt_coleta.gal) ~ dt_coleta.gal,
+      .default = hcov_hku1_dt_coleta.gal),
+    
+    hcov_nl63_dt_coleta.gal = case_when(
+      !is.na(hcov_nl63_resultado.gal) & is.na(hcov_nl63_dt_coleta.gal) ~ dt_coleta.gal,
+      .default = hcov_nl63_dt_coleta.gal),
+    
+    hcov_oc43_dt_coleta.gal = case_when(
+      !is.na(hcov_oc43_resultado.gal) & is.na(hcov_oc43_dt_coleta.gal) ~ dt_coleta.gal,
+      .default = hcov_oc43_dt_coleta.gal),
+    
+    vsr_a_dt_coleta.gal = case_when(
+      !is.na(vsr_a_resultado.gal) & is.na(vsr_a_dt_coleta.gal) ~ dt_coleta.gal,
+      .default = vsr_a_dt_coleta.gal),
+    
+    vsr_b_dt_coleta.gal = case_when(
+      !is.na(vsr_b_resultado.gal) & is.na(vsr_b_dt_coleta.gal) ~ dt_coleta.gal,
+      .default = vsr_b_dt_coleta.gal),
+    
+    vsr_ne_dt_coleta.gal = case_when(
+      !is.na(vsr_ne_resultado.gal) & is.na(vsr_ne_dt_coleta.gal) ~ dt_coleta.gal,
+      .default = vsr_ne_dt_coleta.gal),
+    
+    adeno_dt_coleta.gal = case_when(
+      !is.na(adeno_resultado.gal) & is.na(adeno_dt_coleta.gal) ~ dt_coleta.gal,
+      .default = adeno_dt_coleta.gal),
+    
+    mpv_a_dt_coleta.gal = case_when(
+      !is.na(mpv_a_resultado.gal) & is.na(mpv_a_dt_coleta.gal) ~ dt_coleta.gal,
+      .default = mpv_a_dt_coleta.gal),
+    
+    mpv_b_dt_coleta.gal = case_when(
+      !is.na(mpv_b_resultado.gal) & is.na(mpv_b_dt_coleta.gal) ~ dt_coleta.gal,
+      .default = mpv_b_dt_coleta.gal),
+    
+    mpv_ne_dt_coleta.gal = case_when(
+      !is.na(mpv_ne_resultado.gal) & is.na(mpv_ne_dt_coleta.gal) ~ dt_coleta.gal,
+      .default = mpv_ne_dt_coleta.gal),
+    
+    rino_ab_dt_coleta.gal = case_when(
+      !is.na(rino_ab_resultado.gal) & is.na(rino_ab_dt_coleta.gal) ~ dt_coleta.gal,
+      .default = rino_ab_dt_coleta.gal),
+    
+    rino_ne_dt_coleta.gal = case_when(
+      !is.na(rino_ne_resultado.gal) & is.na(rino_ne_dt_coleta.gal) ~ dt_coleta.gal,
+      .default = rino_ne_dt_coleta.gal),
+    
+    paraflu_1_dt_coleta.gal = case_when(
+      !is.na(paraflu_1_resultado.gal) & is.na(paraflu_1_dt_coleta.gal) ~ dt_coleta.gal,
+      .default = paraflu_1_dt_coleta.gal),
+    
+    paraflu_2_dt_coleta.gal = case_when(
+      !is.na(paraflu_2_resultado.gal) & is.na(paraflu_2_dt_coleta.gal) ~ dt_coleta.gal,
+      .default = paraflu_2_dt_coleta.gal),
+    
+    paraflu_3_dt_coleta.gal = case_when(
+      !is.na(paraflu_3_resultado.gal) & is.na(paraflu_3_dt_coleta.gal) ~ dt_coleta.gal,
+      .default = paraflu_3_dt_coleta.gal),
+    
+    paraflu_4_dt_coleta.gal = case_when(
+      !is.na(paraflu_4_resultado.gal) & is.na(paraflu_4_dt_coleta.gal) ~ dt_coleta.gal,
+      .default = paraflu_4_dt_coleta.gal),
+    
+    boca_dt_coleta.gal = case_when(
+      !is.na(boca_resultado.gal) & is.na(boca_dt_coleta.gal) ~ dt_coleta.gal,
+      .default = boca_dt_coleta.gal),
+    
+    entero_dt_coleta.gal = case_when(
+      !is.na(entero_resultado.gal) & is.na(entero_dt_coleta.gal) ~ dt_coleta.gal,
+      .default = entero_dt_coleta.gal),
+    
+    parecho_dt_coleta.gal = case_when(
+      !is.na(parecho_resultado.gal) & is.na(parecho_dt_coleta.gal) ~ dt_coleta.gal,
+      .default = parecho_dt_coleta.gal)
+  )
+
+
+glimpse(bd_sg_unif_final2)
+
+bd_sg_unif_final2 = bd_sg_unif_final2|>
+  select(-id_gal.gal,
+         -paciente_nome_.gal,
+        -pnome_pac.gal,
+        -paciente_nome_mae_.gal,
+        -pnome_mae.gal,
+        -paciente_sexo.gal,
+        -dt_nasc.gal,
+        -ano_nasc.gal,
+        -cod_mun_res.gal,
+        -uf_res.gal,
+        -dt_coleta.gal,
+        -id_sg_sivep.sg,
+        -paciente_nome_.sg,
+        -pnome_pac.sg,
+        -paciente_nome_mae_.sg,
+        -pnome_mae.sg,
+        -paciente_sexo.sg,
+        -dt_nasc.sg,
+        -ano_nasc.sg,
+        -cod_mun_res.sg,
+        -uf_res.sg,
+        -dt_pri_sin.sg)
+
+
+write_csv2(bd_sg_unif_final2, paste0(pasta_inter_link,"sg_gal_unif_soprob_final.csv"))
+
+write_parquet(bd_sg_unif_final2, paste0(pasta_inter_link,"sg_gal_unif_soprob_final.parquet"))
+
+
+```
+
+## eSUS SG + Gal
+
+### Probabilistico - jw para nomes e hamming para data
+
+#### gerando chave - se necessário
+
+```{r, prob_sg_gal}
+
+sg_dedup = sg_esus_|>
+  mutate(paciente_nome_ = str_replace_all(paciente_nome, "\\s+", ""),
+         paciente_nome_mae_ = str_replace_all(paciente_nome_mae, "\\s+", "")) 
+
+sg_prob = sg_dedup |>
+  rename("cod_mun_res" = municipioIBGE,
+         "paciente_sexo" = sexo)|>
+  mutate(cod_mun_res = substr(cod_mun_res,1,6))|>
+  select(
+    id_sg_esus_,
+    paciente_nome_,
+    pnome_pac,
+    paciente_nome_mae_,
+    pnome_mae,
+    paciente_sexo,
+    dt_nasc,
+    ano_nasc,
+    cod_mun_res,
+    uf_res,
+    ano_pri_sin,
+    ano_notific)|>
+  rename("id_" = "id_sg_esus_")|>
+  mutate(ano = ano_notific)
+
+x_ = nrow(sg_prob)
+
+glimpse(sg_prob)
+
+y_ = nrow(gal_prob)
+
+glimpse(gal_prob)
+
+```
+
+#### projetando quais seriam os melhores pares sem explodir
+
+```{r, test_pares}
+
+# Vetor de variáveis
+vars <- c("paciente_nome_",
+          "pnome_pac",
+          "paciente_nome_mae_",
+          "pnome_mae",
+          "paciente_sexo",
+          "dt_nasc",
+          "ano_nasc",
+          "cod_mun_res",
+          "uf_res")
+
+# Todas as combinações de 3 variáveis
+combs <- combn(vars, 2, simplify = FALSE)
+
+# Lista para armazenar pares e log
+lista_pares <- list()
+log_resultados <- data.frame(
+  combinacao = character(),
+  status = character(),
+  n_pares = numeric(),
+  stringsAsFactors = FALSE
+)
+
+# Loop com tryCatch para capturar erros
+safe_blocking <- safely(function(x, y, on) {
+  pair_blocking(x, y, on = on)
+}, otherwise = NULL)
+
+lista_pares <- vector("list", length(combs))
+lista_erros <- vector("list", length(combs))
+
+for (i in seq_along(combs)) {
+  comb_atual <- combs[[i]]
+  cat("Processando combinação", i, ":", paste(comb_atual, collapse = ", "), "\n")
+
+  res <- safe_blocking(sg_prob, gal_prob, on = comb_atual)
+
+  # Salva resultado (ou NULL)
+  lista_pares[[i]] <- res$result
+
+  # Salva erro (ou NULL)
+  lista_erros[[i]] <- res$error
+
+  if (is.null(res$error)) {
+    n_pares <- nrow(res$result)
+    status <- "Sucesso"
+  } else {
+    n_pares <- NA_integer_
+    status <- paste("Falhou:", conditionMessage(res$error))
+  }
+
+  log_resultados <- rbind(
+    log_resultados,
+    data.frame(
+      combinacao = paste(comb_atual, collapse = ", "),
+      status = status,
+      n_pares = n_pares
+    )
+  )
+
+  gc()
+}
+
+
+# Exibe resumo
+pares_teste = as.data.frame(log_resultados)|>
+  arrange(n_pares)
+
+view(pares_teste)
+
+rm(list = c("pares", "lista_pares"))
+
+```
+
+#### fazendo o link
+
+```{r, pareando_calc_dist_prob}
+
+### salvando os pares por blocos
+
+# Lista de combinações
+comb_list <- list(
+
+  c("paciente_nome_", "ano_nasc"), #nova ok
+  c("paciente_nome_","pnome_mae"), #nova ok
+  c("paciente_nome_","uf_res"), #nova ok 
+  c("paciente_nome_mae_","ano_nasc"), #nova ok
+  c("pnome_pac","paciente_nome_mae_"), #nova ok
+  c("pnome_pac","dt_nasc"), #nova ok
+  c("paciente_nome_mae_", "uf_res"), #nova ok
+  c("pnome_mae","dt_nasc"), #nova ok
+  c("paciente_sexo", "dt_nasc"), #nova ok 
+  c("uf_res", "dt_nasc"), #nova ok
+  c("pnome_pac","cod_mun_res") #nova ok
+)
+
+# Lista para armazenar os resultados
+pares_estado <- list()
+
+inicio_pareamento = Sys.time()
+
+# Loop para gerar os pares e contar as linhas
+for (i in seq_along(comb_list)) {
+  pares_estado[[i]] <- pair_blocking(sg_prob, gal_prob, on = comb_list[[i]])
+  cat("pares_estado_", 
+      i, 
+      " (", 
+      paste(comb_list[[i]], collapse = ", "),
+      "): ", 
+      formatC(nrow(pares_estado[[i]]),
+              format = "f",
+              big.mark = ".",
+              decimal.mark = ",",
+              digits = 0), 
+      "\n", sep = "")
+  gc() # limpeza de memória
+}
+
+### unindo pares únicos
+pares_estado = do.call(rbind, pares_estado)
+
+n_pares_total = nrow(pares_estado)
+
+print(pares_estado)
+
+formatC(n_pares_total,
+        format = "f",
+        big.mark = ".",
+        decimal.mark = ",",
+        digits = 0)
+
+### calculando jw para nomes e hamming para data de nascimento
+pares_estado = pares_estado|>
+  compare_pairs(
+    on = c(    
+      "dt_nasc",
+      "paciente_nome_",
+      "paciente_sexo",
+      "paciente_nome_mae_"),
+    comparators = list(cmp_hamming_date(threshold = 0.85),
+                       cmp_jarowinkler(threshold = 0.85),
+                       cmp_jarowinkler(threshold = 0.85),
+                       cmp_jarowinkler(threshold = 0.85)))
+
+gc()
+final_calculo_dist = Sys.time()
+
+final_calculo_dist - inicio_pareamento
+
+save(pares_estado, file = paste0(pasta_interm,"pares_calc_sprob_sg_esus.RData"))
+
+# rm(pares_estado)
+```
+
+#### Estabelecendo ponto de corte e salvando pares total e verdadeiros
+
+```{r, calc_score_verd}
+load(paste0(pasta_interm,"pares_calc_sprob_sg.RData"))
+
+### escore
+pares_estado = score_simple(pares_estado, 
+                            variable = "score",
+                            on = c(    
+                              "paciente_nome_",
+                              "dt_nasc",
+                              "paciente_sexo",
+                              "paciente_nome_mae_"))
+
+
+### sinalizando registros selecionados como verdadeiros a partir do corte de 0.8 
+pares_estado = select_threshold(pares_estado, 
+                                variable = "paciente_nome_s",
+                                score = "paciente_nome_",
+                                threshold = 0.85,
+                                inplace = T)
+
+pares_estado = select_threshold(pares_estado, 
+                                variable = "paciente_nome_mae_s",
+                                score = "paciente_nome_mae_",
+                                threshold = 0.85,
+                                inplace = T)
+
+pares_estado = select_threshold(pares_estado, 
+                                variable = "paciente_sexo_s",
+                                score = "paciente_sexo",
+                                threshold = 1,
+                                inplace = T)
+
+pares_estado = select_threshold(pares_estado, 
+                                variable = "dt_nasc_s",
+                                score = "dt_nasc",
+                                threshold = 0.85,
+                                inplace = T)
+
+
+## media das pontuações para estatística
+med_d_pac_nome = mean(pares_estado$paciente_nome_)
+med_d_pac_nome_mae = mean(pares_estado$paciente_nome_mae_, na.rm = T)
+med_d_pac_sexo = mean(pares_estado$paciente_sexo)
+med_d_dt_nasc = mean(replace(pares_estado$dt_nasc, -Inf, 0), na.rm = T)
+
+
+
+print(pares_estado)
+### filtra pares verdadeiros
+pares_verd_estado = pares_estado[paciente_nome_s == T &
+                                   paciente_nome_mae_s == T &
+                                   dt_nasc_s == T &
+                                   paciente_sexo_s == T]
+gc()
+
+## media das pontuações para estatística
+med_d_pac_nome_verd = mean(pares_verd_estado$paciente_nome_)
+med_d_pac_nome_mae_verd = mean(pares_verd_estado$paciente_nome_mae_)
+med_d_pac_sexo_verd = mean(pares_verd_estado$paciente_sexo)
+med_d_dt_nasc_verd = mean(pares_verd_estado$dt_nasc)
+
+n_pares_verd = nrow(pares_verd_estado)
+
+# Salvando os arquivos de pares arquivos .RData
+save(pares_estado, file = paste0(pasta_interm,"pares_estado_sg_esus.RData"))
+
+save(pares_verd_estado, file = paste0(pasta_interm,"pares_verd_estado_sg_esus.RData"))
+
+rm(list = c("pares_estado"))
+
+gc()
+```
+
+#### Gerando banco de pares verdadeiros com todas as variáveis originais
+
+```{r, cbind_verd_bd_originais}
+# load(paste0(pasta_interm,"pares_estado.RData"))
+
+### selecionando o banco completo por pares
+pares_estado_sg = sg_dedup[pares_verd_estado$.x,]
+
+pares_estado_gal = gal_dedup[pares_verd_estado$.y,]
+
+### separando colunas de score
+
+score_dt_nasc = tibble(score_dt_nasc = pares_verd_estado$dt_nasc)
+score_sexo = tibble(score_sexo = pares_verd_estado$paciente_sexo)
+score_pac_nome = tibble(score_pac_nome = pares_verd_estado$paciente_nome_)
+score_nome_mae = tibble(score_nome_mae = pares_verd_estado$paciente_nome_mae_)
+
+score_final = tibble(score_final = pares_verd_estado$paciente_nome_+
+  pares_verd_estado$paciente_nome_mae_+
+  pares_verd_estado$dt_nasc+
+  pares_verd_estado$paciente_sexo)
+
+
+## renomeando variaveis do banco para evitar conflitos de nome
+colnames(pares_estado_sg) = paste0(colnames(pares_estado_sg), ".sg")
+
+colnames(pares_estado_gal) = paste0(colnames(pares_estado_gal), ".gal")
+
+
+### juntando sg e gal completo dos pares verdadeiros
+sg_gal_prob = bind_cols(pares_estado_sg,
+                          pares_estado_gal,
+                          score_dt_nasc,
+                          score_sexo,
+                          score_pac_nome,
+                          score_nome_mae,
+                          score_final)
+
+rm(list = c("pares_estado_sg","pares_estado_gal"))
+
+write_parquet(sg_gal_prob, paste0(pasta_interm,"sg_gal_prob_nofilter_sg_esus.parquet"))
+
+gc()
+glimpse(sg_gal_prob)
+```
+
+#### Filtrando pela diferença entre dt_pri_sin e dt_coleta aceitavel
+
+```{r, filt_dt_diff_pri_sin_coleta}
+### criando diferença entre dias do inicio dos sintomas e coleta
+sg_gal_prob = sg_gal_prob|>
+  mutate(dif_link = as.numeric(dt_coleta.gal - dt_pri_sin.sg))
+
+
+### contabizando linhas de acordo com os próximos filtros
+a = nrow(sg_gal_prob)
+b = nrow(sg_gal_prob|>
+           filter(!is.na(uf_res.gal)))
+negativos <- round(nrow(sg_gal_prob |> filter(dif_link < 0)),1)
+acima <- round(nrow(sg_gal_prob |> filter(dif_link > 30)),1)
+
+
+### estatísticas da diferença entre dias do inicio dos sintomas e coleta
+media = round(mean(sg_gal_prob$dif_link, na.rm = T),1)
+max = round(max(sg_gal_prob$dif_link, na.rm = T),1)
+min = round(min(sg_gal_prob$dif_link, na.rm = T),1)
+med = round(quantile(sg_gal_prob$dif_link, 0.50, na.rm = T),1)
+q1 <- round(quantile(sg_gal_prob$dif_link, 0.25, na.rm = T),1)
+q3 <- round(quantile(sg_gal_prob$dif_link, 0.75, na.rm = T),1)
+
+
+## filtrando pelas datas provaveis de coincidencia entre inicio dos sintomas e coleta
+sg_gal_prob_ = sg_gal_prob|>
+  filter(dif_link >= 0 & dif_link <= 30 &
+           !is.na(uf_res.gal))
+
+
+view(sg_gal_prob_)
+
+### contabizando linhas de acordo com os próximos filtros
+c = nrow(sg_gal_prob_)
+
+### estatísticas da diferença entre dias do inicio dos sintomas e coleta
+media_2 = round(mean(sg_gal_prob_$dif_link, na.rm = T),1)
+max_2 = round(max(sg_gal_prob_$dif_link, na.rm = T),1)
+min_2 = round(min(sg_gal_prob_$dif_link, na.rm = T),1)
+med_2 = round(quantile(sg_gal_prob_$dif_link, 0.50, na.rm = T),1)
+q1_2 <- round(quantile(sg_gal_prob_$dif_link, 0.25, na.rm = T),1)
+q3_2 <- round(quantile(sg_gal_prob_$dif_link, 0.75, na.rm = T),1)
+
+
+
+rm(list = c("sg_gal_prob"))
+```
+
+#### Estatístisticas do relacionamento
+
+```{r, estat_prob}
+
+cat(
+  "N geral de registros de sg para prob: ",
+  formatC(x_, format = "f", big.mark =".", decimal.mark = ",", digits = 0),
+  "\nN geral de registros do Gal para prob: ",
+  formatC(y_, format = "f", big.mark =".", decimal.mark = ",", digits = 0),
+  "\n\nN pares gerados pela blocagem: ",
+  n_pares_total,
+  "\nMédia do score:",
+  "\n - Data de nascimento: ",formatC(med_d_dt_nasc, format = "f", big.mark =".", decimal.mark = ",", digits = 2),
+  "\n - Sexo: ",formatC(med_d_pac_sexo, format = "f", big.mark =".", decimal.mark = ",", digits = 2),
+  "\n - Nome do paciente: ",formatC(med_d_pac_sexo, format = "f", big.mark =".", decimal.mark = ",", digits = 2),
+  "\n - Nome da mãe: ",formatC(med_d_pac_sexo, format = "f", big.mark =".", decimal.mark = ",", digits = 2),
+  "\n\nN pares considerados verdadeiros: ",
+  n_pares_verd, "(",
+  formatC((n_pares_verd - x_) / x_ * 100, 
+          format = "f", 
+          digits = 1, 
+          big.mark =".", 
+          decimal.mark = ","), 
+  " % do total de registros inicial)",
+  "\nMédia do score:",
+  "\n - Data de nascimento: ",formatC(med_d_dt_nasc_verd, format = "f", big.mark =".", decimal.mark = ",", digits = 2),
+  "\n - Sexo: ",formatC(med_d_pac_sexo_verd, format = "f", big.mark =".", decimal.mark = ",", digits = 2),
+  "\n - Nome do paciente: ",formatC(med_d_pac_sexo_verd, format = "f", big.mark =".", decimal.mark = ",", digits = 2),
+  "\n - Nome da mãe: ",formatC(med_d_pac_sexo_verd, format = "f", big.mark =".", decimal.mark = ",", digits = 2),
+  "\n\n\n# Após link sem filtro de data: ",
+  "\nLinhas do banco de sg relacionado após junção dos bancos originais: ",
+  a,
+  " (",
+  formatC((a - x_) / x_ * 100, format = "f", digits = 1),
+  "%)\nLinhas do GAL relacionadas pelo probabilistico: ",
+  b,
+  " (",
+  formatC(b / y_ * 100, format = "f", digits = 1),
+  "% do Gal separado e ",
+  formatC(b / x_ * 100, format = "f", digits = 1) ,
+  "% do sg inicial para probabilistico)",
+  "\nDif_link negativo: ", negativos,
+  "\nDif_link > 30 dias: ", acima, 
+  "\nMédia (min - max): ", media, " (", min, " - ", max,")", 
+  "\nMediana (Q1-Q3): ", med, " (", q1, " - ", q3,")",
+  "\n\n\n# Após filtragem da diferença entre a data de início dos sintomas e coleta: ",
+  "\nLinhas após join: ",
+  c,
+  " (",
+  formatC(c / y_ * 100, format = "f", digits = 1),
+  "% do Gal encontrado e ",
+  formatC(c / x_ * 100, format = "f", digits = 1) ,
+  "% do sg encontrado)",
+  "\nMédia (min - max): ", media_2, " (", min_2, " - ", max_2,")", 
+  "\nMediana (Q1-Q3): ", med_2, " (", q1_2, " - ", q3_2,")",
+  "\n\n\n",
+  sep = ""
+) 
+
+
+
+##salvando  dados do probabilistico final
+write_parquet(sg_gal_prob_, paste0(pasta_interm,"sg_gal_prob_esus.parquet"))
+
+write_csv2(sg_gal_prob_, paste0(pasta_interm,"sg_gal_prob_esus.csv"))
+
+
+glimpse(sg_gal_prob_)
+
+gc()
+```
+
+### Revisando manualmente (amostra pequena)
+
+```{r, rev_manual}
+
+### lendo o banco 
+sg_gal_prob_ = read_parquet(paste0(pasta_interm,"sg_gal_prob.parquet"))
+
+### reformando a chave
+sg_gal_prob_ = sg_gal_prob_|>
+    mutate(chave = paste0(
+      paciente_nome.sg,
+      paciente_nome_mae.sg,
+      uf_res.sg,
+      sexo.sg,
+      dt_nasc.sg,
+      dt_pri_sin.sg),
+      chave = str_replace_all(chave,"\\s+", ""))
+
+### Estatisticas
+length(unique(sg_gal_prob_$chave))
+nrow(sg_gal_prob_)
+ncol(sg_gal_prob_)
+glimpse(sg_gal_prob_)
+
+
+### banco para revisão manual
+sg_gal_comp = sg_gal_prob_|>
+  select(
+    paciente_nome.sg,
+    paciente_nome.gal,
+    paciente_nome_mae.sg,
+    paciente_nome_mae.gal,
+    sexo.sg,
+    paciente_sexo.gal,
+    dt_nasc.sg,
+    dt_nasc.gal,
+    dt_pri_sin.sg,
+    dt_coleta.gal,
+    dif_link,
+    uf_res.sg,
+    uf_res.gal,
+    score_final
+  )|>
+  mutate(
+    nome_igual = case_when(
+      paciente_nome.sg == paciente_nome.gal ~ T,
+      .default = F
+    ),
+    nome_mae_igual = case_when(
+      paciente_nome_mae.sg == paciente_nome_mae.gal ~ T,
+      .default = F
+    ),
+    dt_nasc_igual = case_when(
+      dt_nasc.sg == dt_nasc.gal ~ T,
+      .default = F
+    ),
+    sexo_igual = case_when(
+      sexo.sg == paciente_sexo.gal ~ T,
+      .default = F
+    )
+  )|>
+  filter(nome_igual == F & nome_mae_igual == F & dt_nasc_igual == F)
+
+view(sg_gal_comp)
+```
+
+### Juntando banco relacionado com o banco não relacionado de sg
+
+```{r, unir_prob_nprob}
+
+### separando banco não relacionado
+sg_n_relacionado = sg_dedup|>
+  anti_join(sg_gal_prob_, by = c("id_sg_esus_" = "id_sg_esus_.sg"))
+
+
+### estatisticas
+nrow(sg_n_relacionado)
+ncol(sg_n_relacionado)
+
+
+### renomeando variáveis para o padrão do relacionamento
+colnames(sg_n_relacionado) = paste0(colnames(sg_n_relacionado),".sg")
+
+glimpse(sg_gal_prob_)
+
+sg_total = sg_gal_prob_|>
+  bind_rows(sg_n_relacionado, .id = "id_junction" )|>
+  mutate(
+    tipo_link = case_when(
+      id_junction == "2" ~ "no-link",
+      score_final == 4 ~ "perfect-pair",
+      .default = "prob_pair"),
+    )
+
+sg_total|>count(tipo_link)
+glimpse(sg_gal_prob_)
+
+par_sg_geral = sg_total |>
+  mutate(tipo_link2 = case_when(
+    str_detect(tipo_link,"pair") ~ "pair",
+    .default = tipo_link
+  ))|>
+  filter(tipo_link2 == "pair") |>
+  count(tipo_link2) |>
+  mutate(perc = round(n / nrow(sg_total) * 100, 2))|>
+  mutate(
+    n_formatado = format(n, big.mark = ".", decimal.mark = ","),
+    resultado = paste0(n_formatado," (",formatC(perc,
+                                                format = "f",
+                                                digits = 2),"%)")
+  ) |>
+  select(tipo_link2, resultado)|>
+  rename("tipo_link" = "tipo_link2")
+
+sumario_sg_geral = sg_total |>
+  count(tipo_link) |>
+  mutate(perc = round(n / sum(n) * 100, 2))|>
+  adorn_totals(name = "Total") |>
+  mutate(
+    n_formatado = format(n, big.mark = ".", decimal.mark = ","),
+    resultado = paste0(n_formatado," (",formatC(perc,
+                                                format = "f",
+                                                digits = 2),"%)")
+  ) |>
+  select(tipo_link, resultado)|>
+  bind_rows(par_sg_geral)
+
+sumario_sg_geral
+
+par_sg_dedup = sg_total |>
+  distinct(id_sg_esus_.sg, .keep_all = T)|>
+  mutate(tipo_link2 = case_when(
+    str_detect(tipo_link,"pair") ~ "pair",
+    .default = tipo_link
+  ))|>
+  filter(tipo_link2 == "pair") |>
+  count(tipo_link2) |>
+  mutate(perc = round(n / nrow(distinct(sg_total, 
+                                        id_sg_esus_.sg, 
+                                        .keep_all = T)) * 100, 2))|>
+  mutate(
+    n_formatado = format(n, big.mark = ".", decimal.mark = ","),
+    resultado = paste0(n_formatado," (",formatC(perc,
+                                                format = "f",
+                                                digits = 2),"%)")
+  ) |>
+  select(tipo_link2, resultado)|>
+  rename("tipo_link" = "tipo_link2")
+
+sumario_sg_dedup = sg_total |>
+  distinct(id_sg_esus_.sg, .keep_all = T)|>
+  count(tipo_link) |>
+  mutate(perc = round(n / sum(n) * 100, 2))|>
+  adorn_totals(name = "Total") |>
+  mutate(
+    n_formatado = format(n, big.mark = ".", decimal.mark = ","),
+    resultado = paste0(n_formatado," (",formatC(perc,
+                                                format = "f",
+                                                digits = 2),"%)")
+  ) |>
+  select(tipo_link, resultado)|>
+  bind_rows(par_sg_dedup)
+
+sumario_sg_dedup
+
+write_csv2(sg_total, paste0(pasta_interm,"sg_esus_gal_soprob_final.csv"))
+
+write_parquet(sg_total, paste0(pasta_interm,"sg_esus_gal_soprob_final.parquet"))
+
+glimpse(sg_total)
+```
+
+### Unificando resultados dos exames
+
+```{r, unif_results_gal}
+
+bd_sg = read_parquet(paste0(pasta_interm,"sg_esus_gal_soprob_final.parquet"))
+
+glimpse(bd_sg)
+
+bd_sg$id_sg_sivep.sg
+
+bd_sg_cont = bd_sg|>
+  group_by(id_sg_sivep.sg)|>
+  mutate(cont = n())|>
+  ungroup()
+
+bd_sg_cont$cont
+
+bd_sg_cont|>
+  count(cont)
+
+bd_sg_many = bd_sg_cont|>
+  filter(cont >= 2)
+
+bd_sg_many|>
+  count(cont)
+
+glimpse(bd_sg_many)
+
+# Lista de vírus (prefixos) - você pode gerar dinamicamente
+virus_list <-  c(
+  "flu_a_h1n1_pdm09",
+  "flu_a_h3_sazo",
+  "flu_a_h5n1",
+  "flu_a_h7n9",
+  "flu_a_ne",
+  "flu_b_ne",
+  "sars_cov_2",
+  "hcov_229e",
+  "hcov_hku1",
+  "hcov_nl63",
+  "hcov_oc43",
+  "vsr_a",
+  "vsr_b",
+  "vsr_ne",
+  "adeno",
+  "mpv_a",
+  "mpv_b",
+  "mpv_ne",
+  "rino_ab",
+  "rino_ne",
+  "paraflu_1",
+  "paraflu_2",
+  "paraflu_3",
+  "paraflu_4",
+  "boca",
+  "entero",
+  "parecho"
+) # exemplo
+
+list_dedup_sg_gal_ = list()
+
+unique(sort(bd_sg_many$flu_a_h1n1_pdm09_resultado.gal))
+
+for(v in virus_list){
+  # Seleciona colunas do vírus atual
+  cols_v <- c(grep(paste0("^",v, "_"), names(bd_sg_many), value = TRUE),"dt_coleta.gal")
+  col_resultado = paste0(v,"_resultado.gal")
+  
+  # Pivotar para formato longo
+  dados <- bd_sg_many %>%
+    select(id_sg_sivep.sg, all_of(cols_v))|>
+    rename(!!paste0(v,"_dt_coleta.gal") := "dt_coleta.gal")|>
+    filter(!is.na(.data[[col_resultado]]))|>
+    arrange(.data[[col_resultado]])
+  
+  n_antes = nrow(dados)
+  
+  dados = dados|>
+    distinct(id_sg_sivep.sg, .keep_all = T)
+  
+  n_depois = nrow(dados)
+
+  list_dedup_sg_gal_[[v]] = dados
+  
+  cat("\n\nVírus: ",v,
+      "\nN de exames gal: ", n_antes,
+      "\nN de resultados dedup: ", n_depois,
+      "\nRedução:", round((1 - n_depois/n_antes) * 100, 2), "%\n")
+}
+
+unif_sg_gal = bind_rows(list_dedup_sg_gal_)|>
+  select(id_sg_sivep.sg)|>
+  unique()|>
+  arrange(id_sg_sivep.sg)
+
+
+for (v in virus_list) {
+  obj_name <- v
+  
+  if (!is.null(list_dedup_sg_gal_[[obj_name]])) {
+    unif_sg_gal <- unif_sg_gal |>
+      left_join(
+        list_dedup_sg_gal_[[obj_name]],
+        by = "id_sg_sivep.sg"
+      )
+    
+    cat("\n✅ Join realizado para:", obj_name, "\n")
+    cat("Linhas após join:", nrow(unif_sg_gal), "\n")
+  } else {
+    cat("\n⚠️ Objeto não encontrado na lista:", obj_name, "\n")
+  }
+}
+
+glimpse(unif_sg_gal)
+
+glimpse(bd_sg_many)
+
+bd_sg_many_unif = bd_sg_many|>
+  select(-matches(paste(virus_list, collapse = "|")))|>
+  distinct(id_sg_sivep.sg, .keep_all = T)|>
+  left_join(unif_sg_gal, by = "id_sg_sivep.sg")
+
+glimpse(bd_sg_many_unif)
+
+
+
+bd_sg_unif_final <- bd_sg %>%
+  distinct(id_sg_sivep.sg, .keep_all = T )|>
+  anti_join(bd_sg_many_unif %>% select(id_sg_sivep.sg), by = "id_sg_sivep.sg") %>%
+  bind_rows(bd_sg_many_unif) 
+
+unique(bd_sg_unif_final$parecho_resultado.gal)
+
+
+bd_sg_unif_final2 <- bd_sg_unif_final |>
+  mutate(
+    flu_a_h1n1_pdm09_dt_coleta.gal = case_when(
+      !is.na(flu_a_h1n1_pdm09_resultado.gal) & is.na(flu_a_h1n1_pdm09_dt_coleta.gal) ~ dt_coleta.gal,
+      .default = flu_a_h1n1_pdm09_dt_coleta.gal),
+    
+    flu_a_h3_sazo_dt_coleta.gal = case_when(
+      !is.na(flu_a_h3_sazo_resultado.gal) & is.na(flu_a_h3_sazo_dt_coleta.gal) ~ dt_coleta.gal,
+      .default = flu_a_h3_sazo_dt_coleta.gal),
+    
+    flu_a_h5n1_dt_coleta.gal = case_when(
+      !is.na(flu_a_h5n1_resultado.gal) & is.na(flu_a_h5n1_dt_coleta.gal) ~ dt_coleta.gal,
+      .default = flu_a_h5n1_dt_coleta.gal),
+    
+    flu_a_h7n9_dt_coleta.gal = case_when(
+      !is.na(flu_a_h7n9_resultado.gal) & is.na(flu_a_h7n9_dt_coleta.gal) ~ dt_coleta.gal,
+      .default = flu_a_h7n9_dt_coleta.gal),
+    
+    flu_a_ne_dt_coleta.gal = case_when(
+      !is.na(flu_a_ne_resultado.gal) & is.na(flu_a_ne_dt_coleta.gal) ~ dt_coleta.gal,
+      .default = flu_a_ne_dt_coleta.gal),
+    
+    flu_b_ne_dt_coleta.gal = case_when(
+      !is.na(flu_b_ne_resultado.gal) & is.na(flu_b_ne_dt_coleta.gal) ~ dt_coleta.gal,
+      .default = flu_b_ne_dt_coleta.gal),
+    
+    sars_cov_2_dt_coleta.gal = case_when(
+      !is.na(sars_cov_2_resultado.gal) & is.na(sars_cov_2_dt_coleta.gal) ~ dt_coleta.gal,
+      .default = sars_cov_2_dt_coleta.gal),
+    
+    hcov_229e_dt_coleta.gal = case_when(
+      !is.na(hcov_229e_resultado.gal) & is.na(hcov_229e_dt_coleta.gal) ~ dt_coleta.gal,
+      .default = hcov_229e_dt_coleta.gal),
+    
+    hcov_hku1_dt_coleta.gal = case_when(
+      !is.na(hcov_hku1_resultado.gal) & is.na(hcov_hku1_dt_coleta.gal) ~ dt_coleta.gal,
+      .default = hcov_hku1_dt_coleta.gal),
+    
+    hcov_nl63_dt_coleta.gal = case_when(
+      !is.na(hcov_nl63_resultado.gal) & is.na(hcov_nl63_dt_coleta.gal) ~ dt_coleta.gal,
+      .default = hcov_nl63_dt_coleta.gal),
+    
+    hcov_oc43_dt_coleta.gal = case_when(
+      !is.na(hcov_oc43_resultado.gal) & is.na(hcov_oc43_dt_coleta.gal) ~ dt_coleta.gal,
+      .default = hcov_oc43_dt_coleta.gal),
+    
+    vsr_a_dt_coleta.gal = case_when(
+      !is.na(vsr_a_resultado.gal) & is.na(vsr_a_dt_coleta.gal) ~ dt_coleta.gal,
+      .default = vsr_a_dt_coleta.gal),
+    
+    vsr_b_dt_coleta.gal = case_when(
+      !is.na(vsr_b_resultado.gal) & is.na(vsr_b_dt_coleta.gal) ~ dt_coleta.gal,
+      .default = vsr_b_dt_coleta.gal),
+    
+    vsr_ne_dt_coleta.gal = case_when(
+      !is.na(vsr_ne_resultado.gal) & is.na(vsr_ne_dt_coleta.gal) ~ dt_coleta.gal,
+      .default = vsr_ne_dt_coleta.gal),
+    
+    adeno_dt_coleta.gal = case_when(
+      !is.na(adeno_resultado.gal) & is.na(adeno_dt_coleta.gal) ~ dt_coleta.gal,
+      .default = adeno_dt_coleta.gal),
+    
+    mpv_a_dt_coleta.gal = case_when(
+      !is.na(mpv_a_resultado.gal) & is.na(mpv_a_dt_coleta.gal) ~ dt_coleta.gal,
+      .default = mpv_a_dt_coleta.gal),
+    
+    mpv_b_dt_coleta.gal = case_when(
+      !is.na(mpv_b_resultado.gal) & is.na(mpv_b_dt_coleta.gal) ~ dt_coleta.gal,
+      .default = mpv_b_dt_coleta.gal),
+    
+    mpv_ne_dt_coleta.gal = case_when(
+      !is.na(mpv_ne_resultado.gal) & is.na(mpv_ne_dt_coleta.gal) ~ dt_coleta.gal,
+      .default = mpv_ne_dt_coleta.gal),
+    
+    rino_ab_dt_coleta.gal = case_when(
+      !is.na(rino_ab_resultado.gal) & is.na(rino_ab_dt_coleta.gal) ~ dt_coleta.gal,
+      .default = rino_ab_dt_coleta.gal),
+    
+    rino_ne_dt_coleta.gal = case_when(
+      !is.na(rino_ne_resultado.gal) & is.na(rino_ne_dt_coleta.gal) ~ dt_coleta.gal,
+      .default = rino_ne_dt_coleta.gal),
+    
+    paraflu_1_dt_coleta.gal = case_when(
+      !is.na(paraflu_1_resultado.gal) & is.na(paraflu_1_dt_coleta.gal) ~ dt_coleta.gal,
+      .default = paraflu_1_dt_coleta.gal),
+    
+    paraflu_2_dt_coleta.gal = case_when(
+      !is.na(paraflu_2_resultado.gal) & is.na(paraflu_2_dt_coleta.gal) ~ dt_coleta.gal,
+      .default = paraflu_2_dt_coleta.gal),
+    
+    paraflu_3_dt_coleta.gal = case_when(
+      !is.na(paraflu_3_resultado.gal) & is.na(paraflu_3_dt_coleta.gal) ~ dt_coleta.gal,
+      .default = paraflu_3_dt_coleta.gal),
+    
+    paraflu_4_dt_coleta.gal = case_when(
+      !is.na(paraflu_4_resultado.gal) & is.na(paraflu_4_dt_coleta.gal) ~ dt_coleta.gal,
+      .default = paraflu_4_dt_coleta.gal),
+    
+    boca_dt_coleta.gal = case_when(
+      !is.na(boca_resultado.gal) & is.na(boca_dt_coleta.gal) ~ dt_coleta.gal,
+      .default = boca_dt_coleta.gal),
+    
+    entero_dt_coleta.gal = case_when(
+      !is.na(entero_resultado.gal) & is.na(entero_dt_coleta.gal) ~ dt_coleta.gal,
+      .default = entero_dt_coleta.gal),
+    
+    parecho_dt_coleta.gal = case_when(
+      !is.na(parecho_resultado.gal) & is.na(parecho_dt_coleta.gal) ~ dt_coleta.gal,
+      .default = parecho_dt_coleta.gal)
+  )
+
+
+glimpse(bd_sg_unif_final2)
+
+bd_sg_unif_final2 = bd_sg_unif_final2|>
+  select(-id_gal.gal,
+         -paciente_nome_.gal,
+        -pnome_pac.gal,
+        -paciente_nome_mae_.gal,
+        -pnome_mae.gal,
+        -paciente_sexo.gal,
+        -dt_nasc.gal,
+        -ano_nasc.gal,
+        -cod_mun_res.gal,
+        -uf_res.gal,
+        -dt_coleta.gal,
+        -id_sg_sivep.sg,
+        -paciente_nome_.sg,
+        -pnome_pac.sg,
+        -paciente_nome_mae_.sg,
+        -pnome_mae.sg,
+        -paciente_sexo.sg,
+        -dt_nasc.sg,
+        -ano_nasc.sg,
+        -cod_mun_res.sg,
+        -uf_res.sg,
+        -dt_pri_sin.sg)
+
+
+write_csv2(bd_sg_unif_final2, paste0(pasta_interm,"sg_gal_unif_soprob_final.csv"))
+
+write_parquet(bd_sg_unif_final2, paste0(pasta_interm,"sg_gal_unif_soprob_final.parquet"))
+
+
+```
+
+Foi utilizada a versão do R 4.4.3. O relacionamento foi realizado em computador com Processador Intel Xeon(R) W-1370 (8 núcleos de 2.90 GHz) e 128 Gb de memória RAM DDR4 - 3200 MHz. Todos os casos de SG e Srag encontrados no relacionamento foram anonimizados.
+
+Serão excluídos previamente registros sem presença de sintoma, e que não possuam data do início dos sintomas, bem como, posterior ao relacionamento, registros que possuam detecção com data da coleta maior que sete dias do início dos sintomas, visando reforçar a relação entre a detecção viral e o quadro clínico.
