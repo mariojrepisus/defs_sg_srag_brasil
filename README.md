@@ -2,6 +2,8 @@ Avaliação de acurácia das definições de caso de SG sentinela e Srag brasile
 
 Agradeço as contribuições fundamentais da Dr. Dalva Maria de Assis, Dr. Marcelo Ferreira da Costa Gomes e toda a equipe da CGCOVID/DEDT/SVSA/MS, bem como ao Dr. Silvio Luis Rodrigues de Almeida, e a equipe de supervisores, colegas e toda a coordenação do EpiSUS/CGPRESP/SVSA/MS.
 
+Contribuiçōes para o sucesso do relacionamento de dados foram dadas por Talita Gomes da Silva Batista (CGARB/DEDT/SVSA/MS), Dayan Carvalho Ramos Salles de Oliveira (NGD/Daent/SVSA/MS), Cid de Paulo Felipe dos Santos e David José Ferreira da Silva (CGIEPI/Daevs/SVSA/MS).
+
 Aos que consultam, colaborações e ajustes sugeridos serão muito bem vindos!
 Favor enviar para mario.junior@saude.gov.br e mariojr.episus@gmail.com
 
