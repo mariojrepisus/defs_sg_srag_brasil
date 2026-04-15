@@ -4,3 +4,7 @@ Agradeço as contribuições fundamentais da Dr. Dalva Maria de Assis, Dr. Marce
 
 Aos que consultam, colaborações e ajustes sugeridos serão muito bem vindos!
 Favor enviar para mario.junior@saude.gov.br e mariojr.episus@gmail.com
+
+Não compartilhe dados nominais fora de ambientes seguros autorizados. A LGPD garante direitos de confidencialidade de cidadãos brasileiros. 
+
+A pesquisa foi aprovada pelo Comitê de Ética em Pesquisa do Instituto Nacional de Infectologia Evandro Chagas, aprovado sob número CAAE 94470425.9.0000.0008, em 13/01/2026.
